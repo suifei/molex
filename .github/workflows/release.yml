@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Validate tag version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag must use semantic version form such as v0.1.0 or v0.1.0-rc.1." >&2
+            exit 1
+          fi
+
+          version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./frontend/package.json').version")"
+          if [[ "$version" != "$package_version" ]]; then
+            echo "Tag version $version does not match frontend/package.json version $package_version." >&2
+            exit 1
+          fi
+          echo "MOLEX_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Test and build frontend
+        working-directory: frontend
+        run: npm run check && npm test && npm run build
+      - name: Vet Go
+        run: go vet ./...
+      - name: Test Go
+        run: go test -count=1 ./...
+      - name: Race test Go
+        run: go test -race -count=1 ./...
+
+      - name: Build release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+
+          targets=(
+            "windows/amd64"
+            "windows/arm64"
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+          )
+
+          for target in "${targets[@]}"; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            archive_base="molex_${MOLEX_VERSION}_${goos}_${goarch}"
+            stage="$RUNNER_TEMP/$archive_base"
+            mkdir -p "$stage"
+
+            binary="molex"
+            if [[ "$goos" == "windows" ]]; then
+              binary="molex.exe"
+            fi
+
+            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
+              go build -trimpath \
+              -ldflags "-s -w -X main.version=$MOLEX_VERSION" \
+              -o "$stage/$binary" .
+
+            cp LICENSE README.md README.en.md "$stage/"
+
+            if [[ "$goos" == "windows" ]]; then
+              (cd "$stage" && zip -q -9 "$GITHUB_WORKSPACE/release/$archive_base.zip" \
+                "$binary" LICENSE README.md README.en.md)
+            else
+              tar -C "$stage" -czf "$GITHUB_WORKSPACE/release/$archive_base.tar.gz" \
+                "$binary" LICENSE README.md README.en.md
+            fi
+          done
+
+          (cd release && sha256sum molex_* > SHA256SUMS)
+          cat release/SHA256SUMS
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_flags=(
+            --repo "$GITHUB_REPOSITORY"
+            --verify-tag
+            --title "MoleX $GITHUB_REF_NAME"
+            --generate-notes
+          )
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" release/* "${release_flags[@]}"

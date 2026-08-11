@@ -1,39 +1,41 @@
 <p align="center">
-  <img src="frontend/public/molex-mark.svg" width="104" height="104" alt="MoleX logo">
+  <img src="frontend/public/molex-mark.svg" width="104" height="104" alt="MoleX 图标">
 </p>
 
 <h1 align="center">MoleX</h1>
 
-<p align="center"><strong>Secure TCP transit through one public WSS entrypoint.</strong><br>Relay, Edge, and Target in one Go binary, managed from the browser or CLI.</p>
+<p align="center"><strong>通过一个公网 WSS 入口安全转发 TCP。</strong><br>Relay、Edge、Target 共用一个 Go 单二进制，通过浏览器或 CLI 管理。</p>
 
 <p align="center">
-  <a href="https://github.com/suifei/molex/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/suifei/molex/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <img alt="Go 1.25 or newer" src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat-square&logo=go&logoColor=white">
+  <a href="https://github.com/suifei/molex/actions/workflows/ci.yml"><img alt="CI 状态" src="https://github.com/suifei/molex/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/suifei/molex/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/suifei/molex?display_name=tag&sort=semver&style=flat-square"></a>
+  <img alt="Go 1.25 或更新版本" src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat-square&logo=go&logoColor=white">
   <img alt="TCP over WSS" src="https://img.shields.io/badge/transport-TCP%20over%20WSS-30A46C?style=flat-square">
-  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-24292F?style=flat-square"></a>
+  <a href="LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/license-MIT-24292F?style=flat-square"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/suifei/molex/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/suifei/molex?style=flat-square&logo=github&cacheSeconds=60"></a>
-  <a href="https://github.com/suifei/molex/forks"><img alt="GitHub forks" src="https://img.shields.io/github/forks/suifei/molex?style=flat-square&logo=github&cacheSeconds=60"></a>
-  <a href="https://github.com/suifei/molex/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/suifei/molex?style=flat-square&cacheSeconds=60"></a>
-  <a href="https://github.com/suifei/molex/pulls"><img alt="Open pull requests" src="https://img.shields.io/github/issues-pr/suifei/molex?style=flat-square&cacheSeconds=60"></a>
-  <a href="https://github.com/suifei/molex/graphs/contributors"><img alt="Contributors" src="https://img.shields.io/github/contributors/suifei/molex?style=flat-square&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/suifei/molex?style=flat-square&logo=github&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/forks"><img alt="GitHub Forks" src="https://img.shields.io/github/forks/suifei/molex?style=flat-square&logo=github&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/issues"><img alt="待处理 Issues" src="https://img.shields.io/github/issues/suifei/molex?style=flat-square&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/pulls"><img alt="待处理 Pull Requests" src="https://img.shields.io/github/issues-pr/suifei/molex?style=flat-square&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/graphs/contributors"><img alt="贡献者" src="https://img.shields.io/github/contributors/suifei/molex?style=flat-square&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/releases"><img alt="总下载量" src="https://img.shields.io/github/downloads/suifei/molex/total?style=flat-square&cacheSeconds=60"></a>
 </p>
 
 <p align="center">
-  <a href="#quick-start"><strong>Quick start</strong></a> ·
-  <a href="docs/user-guide.md"><strong>Illustrated guide</strong></a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="#documentation">Documentation</a> ·
-  <a href="docs/security.md">Security</a>
+  <a href="#快速开始"><strong>快速开始</strong></a> ·
+  <a href="docs/user-guide.zh-CN.md"><strong>完整图文手册</strong></a> ·
+  <a href="#工作原理">工作原理</a> ·
+  <a href="#公开文档">公开文档</a> ·
+  <a href="docs/security.md">安全模型</a>
 </p>
 
-<p align="center"><sub><strong>README:</strong> English · <a href="README.zh-CN.md">简体中文</a></sub></p>
+<p align="center"><sub><strong>README：</strong><a href="README.en.md">English</a> · 简体中文</sub></p>
 
-<p align="center"><sub><strong>Illustrated guide:</strong>
-<a href="docs/user-guide.md"><strong>English</strong></a> ·
-<a href="docs/user-guide.zh-CN.md">简体中文</a> ·
+<p align="center"><sub><strong>图文手册：</strong>
+<a href="docs/user-guide.md">English</a> ·
+<a href="docs/user-guide.zh-CN.md"><strong>简体中文</strong></a> ·
 <a href="docs/user-guide.zh-TW.md">繁體中文</a> ·
 <a href="docs/user-guide.es.md">Español</a> ·
 <a href="docs/user-guide.pt-BR.md">Português (Brasil)</a> ·
@@ -46,70 +48,72 @@
 <a href="docs/user-guide.hi.md">हिन्दी</a></sub></p>
 
 <p align="center">
-  <a href="docs/user-guide.md"><img src="docs/images/user-guide/relay-dashboard-en.png" width="960" alt="MoleX Relay Web console showing the encrypted route and connected clients"></a>
+  <a href="docs/user-guide.zh-CN.md"><img src="docs/images/user-guide/relay-dashboard-zh-CN.png" width="960" alt="显示加密路由与已连接客户端的 MoleX 中继 Web 控制台"></a>
 </p>
 
-<p align="center"><sub>Relay console: router-style peer inventory, route state, endpoints, pairing, and ciphertext traffic counters.</sub></p>
+<p align="center"><sub>中继控制台：像路由器一样查看节点、路由状态、端点、配对关系和密文流量统计。</sub></p>
 
 ---
 
-MoleX connects a local TCP listener to a service on a private network through a public WebSocket relay. Edge and Target both initiate outbound connections to the same `wss://` endpoint, so the public host normally exposes only HTTPS `443` through Caddy.
+MoleX 通过公网 WebSocket 中继，把本地 TCP 监听端口连接到远端内网服务。Edge 和 Target 都主动连接同一个 `wss://` 地址，因此公网主机通常只需要由 Caddy 暴露 HTTPS `443`。
 
-The Relay pairs peers and forwards opaque binary frames. It never receives the end-to-end payload secret and cannot decrypt tunneled TCP data.
+Relay 只负责会合节点和转发不透明二进制帧。它不会收到端到端载荷密钥，也无法解密隧道内的 TCP 数据。
 
-## Why MoleX
+## 为什么选择 MoleX
 
-| Design choice | Operational result |
+| 设计选择 | 实际效果 |
 | --- | --- |
-| **One public entrypoint** | Many concurrent TCP streams share one yamux session over WSS; no per-service public port is required. |
-| **Ciphertext-only Relay** | Edge and Target use X25519, HKDF-SHA256, and AES-256-GCM inside TLS; Relay forwards authenticated ciphertext. |
-| **One binary, three roles** | The same cross-platform Go binary runs as Relay, Edge, or Target with a small JSON configuration. |
-| **Browser-managed everywhere** | Relay and both client roles use the same authenticated English/Simplified Chinese Web console; CLI operation remains available. |
-| **Route-aware lifecycle** | Edge listens only while an authenticated peer route is ready, closes stale listeners on disconnect, and returns automatically after pairing. |
-| **Actionable recovery** | Capped exponential backoff, randomized jitter, bounded socket workers, and operator-focused errors make failures diagnosable. |
+| **单公网入口** | 多条并发 TCP 流通过 yamux 共用一条 WSS 会话，不需要为每个服务开放公网端口。 |
+| **中继只见密文** | Edge 与 Target 在 TLS 内使用 X25519、HKDF-SHA256 和 AES-256-GCM；Relay 只转发经过认证的密文。 |
+| **单二进制、三种职责** | 同一个跨平台 Go 程序可作为 Relay、Edge 或 Target 运行，只需要一份小型 JSON 配置。 |
+| **三端统一 Web 管理** | Relay 与两种客户端共用带认证的中英文浏览器控制台，同时保留 CLI 运行方式。 |
+| **路由感知生命周期** | 只有加密路由就绪时 Edge 才监听；断线后清理旧监听，重新配对后自动恢复。 |
+| **可操作的故障恢复** | 有上限指数退避、随机抖动、有界 Socket 任务和带解决步骤的错误提示，让故障能够定位和处理。 |
 
-MoleX works with OpenAI-compatible APIs, SSH, RDP, HTTP services, databases, and other TCP applications. The [complete illustrated guide](docs/user-guide.md) includes deployment recipes and screenshots for common scenarios.
+MoleX 可用于 OpenAI 兼容 API、SSH、RDP、HTTP 服务、数据库和其他 TCP 应用。[完整图文使用手册](docs/user-guide.zh-CN.md)提供常见场景的部署步骤与截图。
 
 > [!IMPORTANT]
-> MoleX currently transports TCP only. It does not provide native UDP, anonymity, traffic-analysis resistance, or permission to bypass laws, service terms, or network policy.
+> MoleX 当前只传输 TCP，不提供原生 UDP、匿名性或抗流量分析能力，也不赋予绕过法律、服务条款或网络策略的权利。
 
-## How it works
+## 工作原理
 
 ```mermaid
 flowchart LR
-    App["Local application"] <-->|"TCP"| Edge["MoleX Edge<br/>route-aware listener"]
-    Edge -->|"outbound WSS :443"| Caddy["Caddy<br/>public entrypoint"]
-    Caddy <-->|"loopback /ws/session"| Relay["MoleX Relay<br/>ciphertext rendezvous"]
-    Target["MoleX Target<br/>private connector"] -->|"outbound WSS :443"| Caddy
-    Target <-->|"TCP"| Service["Private service"]
+    App["本地应用"] <-->|"TCP"| Edge["MoleX Edge<br/>路由感知监听"]
+    Edge -->|"主动 WSS :443"| Caddy["Caddy<br/>公网入口"]
+    Caddy <-->|"回环 /ws/session"| Relay["MoleX Relay<br/>密文会合"]
+    Target["MoleX Target<br/>内网连接器"] -->|"主动 WSS :443"| Caddy
+    Target <-->|"TCP"| Service["内网服务"]
 ```
 
-Both clients dial outward. After Relay pairs matching Edge and Target roles, application data moves full duplex through this stack:
+两端客户端都主动向外连接。Relay 配对通道相同、角色互补的 Edge 与 Target 后，应用数据通过以下协议栈全双工传输：
 
 ```text
-TCP stream -> yamux stream -> AES-256-GCM record -> WebSocket binary frame -> TLS 1.3
+TCP 流 -> yamux 逻辑流 -> AES-256-GCM 记录 -> WebSocket 二进制帧 -> TLS 1.3
 ```
 
-Relay can still observe connection metadata, timing, frame sizes, and which opaque route identifiers are paired. See the [architecture](docs/architecture.md) and [security model](docs/security.md) for the complete trust boundary.
+Relay 仍能观察连接元数据、时序、帧长度以及哪些不透明路由标识发生配对。完整信任边界见[架构与协议](docs/architecture.md)和[安全模型](docs/security.md)。
 
-## Roles and modes
+## 模式与职责
 
-| Configuration | Runtime responsibility | Listener and connection behavior |
+| 配置 | 运行职责 | 监听与连接行为 |
 | --- | --- | --- |
-| `mode: "relay"` | Public rendezvous and opaque frame forwarding. | Listens on loopback behind Caddy; never receives the payload secret. |
-| `mode: "punch"`, `role: "edge"` | Accepts local application TCP connections and opens one yamux stream per connection. | Dials Relay over WSS; exposes its local listener only while a route is authenticated and ready. |
-| `mode: "punch"`, `role: "target"` | Accepts yamux streams and connects each one to `tunnel.local`. | Dials Relay over WSS; initiates a private-service TCP connection for each stream. |
+| `mode: "relay"` | 公网会合和不透明帧转发。 | 在 Caddy 后方监听回环地址，不接收载荷密钥。 |
+| `mode: "punch"`、`role: "edge"` | 接收本地应用 TCP 连接，每条连接打开一条 yamux 流。 | 主动通过 WSS 连接 Relay；只有路由认证并就绪时才开放本地监听。 |
+| `mode: "punch"`、`role: "target"` | 接收 yamux 流，并为每条流连接 `tunnel.local`。 | 主动通过 WSS 连接 Relay；按流建立到内网服务的 TCP 连接。 |
 
-`tunnel.remote` is a shared logical channel name, not a public TCP port. A numeric value such as `"2222"` is valid if port-like channel names are convenient. Publishing another ordinary TCP port on the Relay would break strict single-port operation.
+`tunnel.remote` 是两端共享的逻辑通道名称，不是公网 TCP 端口。为了保留类似端口号的习惯，可以使用 `"2222"` 作为通道名。在 Relay 上另行开放普通 TCP 端口会破坏严格的单公网端口设计。
 
-## Quick start
+## 快速开始
 
 > [!TIP]
-> For a production walkthrough with screenshots, Caddy, OpenAI/API examples, TCP service recipes, troubleshooting, and security checks, start with the [complete illustrated user guide](docs/user-guide.md).
+> 生产部署请从[完整图文使用手册](docs/user-guide.zh-CN.md)开始，其中包含三端截图、Caddy、OpenAI/API、TCP 服务示例、故障排查和安全检查。
 
-### 1. Build
+### 1. 下载或编译
 
-Requirements: Go 1.25 or newer and Node.js 20 or newer.
+Windows、macOS 和 Linux 的 `amd64`、`arm64` 预编译包可从 [GitHub Releases](https://github.com/suifei/molex/releases/latest) 下载。每个版本都附带 `SHA256SUMS`，解压前应先核对下载文件。
+
+从源码编译需要 Go 1.25 或更新版本，以及 Node.js 20 或更新版本：
 
 ```bash
 cd frontend
@@ -119,55 +123,55 @@ cd ..
 go build -trimpath -ldflags "-s -w -X main.version=0.1.0" -o bin/molex .
 ```
 
-The frontend build must run before the Go build so the current Web assets are embedded in the binary.
+必须先构建前端，再构建 Go 程序，确保当前 Web 资源被嵌入二进制。
 
-### 2. Start the public Relay
+### 2. 启动公网 Relay
 
-Create `relay.json` from [examples/relay.json](examples/relay.json), replace its token, and create a protected password file containing at least 12 characters. Then start the Web console and Relay runtime together:
+参考 [examples/relay.json](examples/relay.json) 创建 `relay.json`，替换其中的令牌，并创建一个仅允许服务账户读取、内容不少于 12 个字符的密码文件。然后同时启动 Web 控制台和 Relay 运行时：
 
 ```bash
 molex web --config relay.json --password-file ./web-password --autostart
 ```
 
-The Relay data plane listens on `127.0.0.1:8080`; the management console listens separately on `127.0.0.1:9090`. Configure Caddy to publish `/ws/session` and the authenticated console through HTTPS. Use the audited [Caddy example](examples/Caddyfile) and [deployment guide](docs/deployment-caddy.md).
+Relay 数据面监听 `127.0.0.1:8080`，管理控制台单独监听 `127.0.0.1:9090`。通过 Caddy 使用 HTTPS 发布 `/ws/session` 和带认证的控制台。请使用已经核对的 [Caddy 示例](examples/Caddyfile)和[部署指南](docs/deployment-caddy.md)。
 
-### 3. Start the private Target
+### 3. 启动内网 Target
 
-On the machine that can reach the private service:
+在能够访问目标服务的机器上运行：
 
 ```bash
 molex web --config target.json --password-file ./web-password --autostart
 ```
 
-Target establishes an outbound WSS connection and waits for streams. Its management listener remains loopback-only.
+Target 主动建立 WSS 连接并等待流量，其管理监听仍然只绑定本机回环地址。
 
-### 4. Start the local Edge
+### 4. 启动本地 Edge
 
-On the machine where the application runs:
+在需要使用内网服务的机器上运行：
 
 ```bash
 molex web --config edge.json --password-file ./web-password --autostart
 ```
 
-Connect the application to the Edge listener after the console reports `Encrypted route is ready`. With the included SSH example:
+控制台显示“加密路由已就绪”后，再让应用连接 Edge 监听端口。使用仓库内的 SSH 示例时：
 
 ```bash
 ssh -p 2222 user@127.0.0.1
 ```
 
-### 5. Open the Web console
+### 5. 打开 Web 控制台
 
-Use an SSH tunnel for private management access:
+可以通过 SSH 转发安全访问私有管理端口：
 
 ```bash
 ssh -N -L 9090:127.0.0.1:9090 user@molex-host
 ```
 
-Then open `http://127.0.0.1:9090`. On a public Relay, a dedicated HTTPS Caddy hostname is more convenient. MoleX rejects non-loopback management listeners, so remote access must use an HTTPS reverse proxy or SSH forwarding. The console uses secure session cookies, CSRF protection, same-origin checks, and rate-limited login attempts.
+然后打开 `http://127.0.0.1:9090`。公网 Relay 更适合使用独立的 Caddy HTTPS 管理域名。MoleX 会拒绝非回环管理监听，因此远程访问必须经过 HTTPS 反向代理或 SSH 转发。控制台使用安全会话 Cookie、CSRF 防护、同源检查和登录限速。
 
-The Web console controls the selected runtime in-process; it does not spawn another MoleX process. Relay presents connected clients like a router table, including node identity, trusted source IP, endpoints, pairing, platform, uptime, and live ciphertext counters.
+Web 控制台在当前进程内控制所选运行时，不会创建另一个 MoleX 进程。Relay 会像路由器连接表一样显示节点身份、可信来源 IP、端点、配对关系、运行平台、在线时长和实时密文计数。
 
-## Configuration
+## 配置
 
 ```json
 {
@@ -185,19 +189,19 @@ The Web console controls the selected runtime in-process; it does not spawn anot
 }
 ```
 
-| Field | Required for | Meaning |
+| 字段 | 必填范围 | 含义 |
 | --- | --- | --- |
-| `mode` | Every role | `relay` or `punch`. |
-| `role` | Clients | `edge` or `target`. |
-| `secret` | Clients | End-to-end PSK shared by Edge and Target. Use a generated 32-byte value. |
-| `token` | Optional | Relay admission token shared by Relay and both clients. It is separate from the payload secret. |
-| `listen` | Relay and Edge | Relay HTTP listener or local Edge TCP listener. |
-| `remote` | Clients | Relay `wss://` endpoint. Plain `ws://` is restricted to loopback. |
-| `tunnel` | Clients | `local` is the Target service, `remote` is the shared channel, and optional `name` labels the node. The OS hostname is used when `name` is empty. |
+| `mode` | 所有职责 | `relay` 或 `punch`。 |
+| `role` | 客户端 | `edge` 或 `target`。 |
+| `secret` | 客户端 | Edge 与 Target 共享的端到端 PSK，应使用生成的 32 字节随机值。 |
+| `token` | 可选 | Relay 与两端客户端共享的中继准入令牌，它与载荷密钥相互独立。 |
+| `listen` | Relay 和 Edge | Relay HTTP 监听地址或 Edge 本地 TCP 监听地址。 |
+| `remote` | 客户端 | Relay `wss://` 地址；明文 `ws://` 仅允许回环地址。 |
+| `tunnel` | 客户端 | `local` 是 Target 服务，`remote` 是共享通道，可选的 `name` 用于标记节点；留空时使用操作系统主机名。 |
 
-Unknown JSON fields are rejected. Client secrets must contain at least 16 characters; `molex config init` generates 32 random bytes encoded as URL-safe Base64.
+配置解析会拒绝未知字段。客户端密钥至少需要 16 个字符；`molex config init` 默认生成 32 字节随机值并使用 URL 安全 Base64 编码。
 
-## CLI reference
+## CLI 参考
 
 ```text
 molex serve   --config ./relay.json
@@ -211,60 +215,60 @@ molex config check --config ./molex.json
 molex version
 ```
 
-The Web password can also be supplied through `MOLEX_WEB_PASSWORD`. Prefer `--password-file` for services so the password is not stored in a unit file or shell history. Payload secrets and Relay tokens come from JSON or explicit CLI flags; never put them in node names, endpoint labels, logs, or screenshots.
+Web 管理密码也可通过 `MOLEX_WEB_PASSWORD` 提供。作为系统服务运行时优先使用 `--password-file`，避免把密码写入服务文件或 shell 历史。载荷密钥和 Relay 令牌可由 JSON 或明确的 CLI 参数提供；不要把它们写入节点名称、端点标签、日志或截图。
 
-## Operational resilience
+## 稳定性与恢复
 
-Edge and Target reconnect automatically with capped exponential backoff from about one second to at most fifteen seconds. Every delay includes 20% randomized jitter, and a session that remains healthy for 30 seconds resets the delay.
+Edge 与 Target 会使用有上限指数退避自动重连，等待时间从约 1 秒增长到最多 15 秒。每次等待带 20% 随机抖动，会话连续健康运行 30 秒后重置退避。
 
-The Edge listener exists only while an authenticated Edge/Target route is ready. If Relay or Target disconnects, Edge closes and clears the old listener, reports `Not listening`, and reopens it after pairing succeeds. An interrupted local application connection must be retried after the route is ready again.
+只有经过认证的 Edge/Target 路由就绪时，Edge 才会开放本地监听。Relay 或 Target 断开后，Edge 会关闭并清理旧监听，显示“未监听”，重新配对后再自动开放端口。中断的本地应用连接需要在路由恢复后重试。
 
-Runtime messages identify the likely next action for Relay-token, `/ws/session`, Caddy-upstream, DNS, TLS, pairing, occupied-listener, and Target-service failures. Transient client failures keep retrying until the runtime is stopped.
+运行提示会指出 Relay 令牌、`/ws/session`、Caddy 上游、DNS、TLS、配对、监听端口占用和 Target 服务故障的下一步操作。除非运行时被停止，客户端会持续重试临时故障。
 
-Each route admits at most 256 active yamux streams. Excess connections fail closed with guidance. Shutdown closes the listener and encrypted session before waiting for admitted workers, preventing abandoned socket goroutines.
+每条路由最多同时处理 256 条活跃 yamux 流，超出上限的连接会安全关闭并给出处理建议。停止时先关闭监听和加密会话，再等待已经接纳的任务结束，避免遗留 Socket 协程。
 
-Relay keeps one reader per WebSocket from registration through forwarding. A waiting-client disconnect immediately releases its role slot. Frame writes have a 30-second deadline, and competing timeout, disconnect, bridge, and shutdown paths converge on one idempotent close operation.
+从注册到转发，Relay 为每条 WebSocket 始终只保留一个读取者。等待中的客户端断开后会立即释放角色槽位；单帧写入最长等待 30 秒；超时、断线、转发结束和停止等竞争路径最终都会进入同一个幂等关闭操作。
 
-## Security and protocol
+## 安全与协议
 
-1. Each client establishes TLS and upgrades to a binary WebSocket through Caddy.
-2. A client may send fixed-size authenticated, encrypted WebSocket ping payloads containing Relay-visible operational metadata. Older Relays acknowledge and ignore these standard control frames.
-3. The 128-byte hello contains an opaque route identifier, role, ephemeral X25519 public key, nonce, and PSK proof. It contains no literal product marker, channel, or secret.
-4. Relay pairs complementary roles with the same opaque route identifier and exchanges their hello frames.
-5. Peers authenticate the transcript, derive directional keys with HKDF-SHA256, and confirm the session key.
-6. yamux frames become independent AES-256-GCM records carried in binary WebSocket frames. Compression stays disabled for encrypted tunnel records.
-7. Relay copies ciphertext without decrypting it and counts only encrypted frame sizes.
+1. 每个客户端通过 Caddy 建立 TLS，并升级为二进制 WebSocket。
+2. 客户端可以发送固定长度、经过认证加密的 WebSocket Ping 载荷，上报 Relay 可见的运维元数据；旧版 Relay 会按标准控制帧确认后忽略。
+3. 128 字节握手帧包含不透明路由标识、角色、临时 X25519 公钥、随机数和 PSK 证明，不包含明文产品标记、通道名或密钥。
+4. Relay 按不透明路由标识配对角色互补的节点，并交换双方握手帧。
+5. 两端验证握手记录，通过 HKDF-SHA256 派生双向独立密钥并完成密钥确认。
+6. yamux 帧被封装成独立的 AES-256-GCM 记录，再由 WebSocket 二进制帧承载；加密隧道记录始终禁用 WebSocket 压缩。
+7. Relay 只复制密文，不做解密，流量统计也只基于密文帧尺寸。
 
-Read [Architecture and protocol](docs/architecture.md) for the full lifecycle and [Security model](docs/security.md) for guarantees, metadata visibility, TLS assumptions, non-goals, credential handling, and responsible disclosure.
+完整生命周期见[架构与协议](docs/architecture.md)；保证范围、元数据可见性、TLS 假设、非目标、凭据管理和漏洞报告方式见[安全模型](docs/security.md)。
 
-## Documentation
+## 公开文档
 
-MoleX publishes the material needed to deploy, inspect, verify, and reuse the project without treating the implementation as a black box.
+MoleX 公开部署、检查、验证和复用所需的资料，不把实现包装成无法审阅的黑盒。
 
-| Document | Use it for |
+| 文档 | 用途 |
 | --- | --- |
-| [Complete illustrated user guide](docs/user-guide.md) | Relay/Edge/Target setup, WebUI screenshots, OpenAI/API and TCP recipes, UDP boundaries, operations, troubleshooting, and MIT terms. Available in 12 languages from its header. |
-| [Architecture and protocol](docs/architecture.md) | Topology, management plane, encrypted records, rendezvous, handshake, yamux lifecycle, reconnection, concurrency, and trust boundaries. |
-| [Caddy deployment](docs/deployment-caddy.md) | Production WSS routing, loopback listeners, HTTPS management, systemd, firewall rules, health checks, and guided diagnostics. |
-| [Security model](docs/security.md) | Security goals and non-goals, credential separation, metadata visibility, TLS assumptions, local exposure, rotation, and disclosure. |
-| [Testing and release checks](docs/testing.md) | Go, race, frontend, cross-platform, real-socket, recovery, protocol, WebUI, and manual release verification. |
-| [Tahoe-inspired WebUI specification](docs/macos-tahoe-webui-style-guide.zh-CN.md) | Reusable Chinese design reference for system fonts, semantic tokens, light/dark materials, controls, responsiveness, accessibility, and visual acceptance. |
-| [Configuration and Caddy examples](examples/) | Minimal Relay, Edge, Target, and Caddy files to use as reviewed starting points rather than copying real credentials from documentation. |
+| [完整图文使用手册](docs/user-guide.zh-CN.md) | Relay、Edge、Target 三端配置，WebUI 截图，OpenAI/API 与 TCP 场景，UDP 边界，运维、排障和 MIT 条款；顶部可切换 12 种语言。 |
+| [架构与协议](docs/architecture.md) | 组件拓扑、管理面、加密记录、会合、握手、yamux 生命周期、重连、并发和信任边界。 |
+| [Caddy 部署](docs/deployment-caddy.md) | 生产 WSS 路由、回环监听、HTTPS 管理、systemd、防火墙、健康检查和指导性诊断。 |
+| [安全模型](docs/security.md) | 安全目标与非目标、凭据分离、元数据可见性、TLS 假设、本地暴露、轮换和漏洞报告。 |
+| [测试与发布检查](docs/testing.md) | Go、race、前端、跨平台、真实 Socket、恢复、协议、WebUI 和人工发布验收。 |
+| [Tahoe 风格 WebUI 设计规范](docs/macos-tahoe-webui-style-guide.zh-CN.md) | 可跨项目复用的系统字体、语义 token、明暗材质、控件、响应式、无障碍和视觉验收规范。 |
+| [配置与 Caddy 示例](examples/) | 经过核对的 Relay、Edge、Target 和 Caddy 最小起点，避免从文档中复制真实凭据。 |
 
-## Community and human value
+## 对社区与人类的价值
 
-MoleX contributes inspectable engineering foundations rather than unverifiable networking claims:
+MoleX 希望贡献可检查的工程基础，而不是无法验证的网络能力宣传：
 
-- **Open-source community:** an MIT-licensed reference for ciphertext rendezvous, end-to-end encrypted TCP transit, bounded socket lifecycles, and actionable reconnection behavior.
-- **Reviewers and learners:** public protocol, threat-model, metadata, concurrency, and real-socket test documentation that states both guarantees and non-goals.
-- **Operators and small teams:** a single-binary, browser-managed way to reach services they own without publishing every private service directly to the Internet.
-- **Global participation:** a bilingual WebUI and illustrated documentation in 12 languages lower language and platform barriers to learning, deployment, review, and contribution.
-- **Other projects:** reusable configuration examples, testing patterns, error-guidance patterns, and a documented Tahoe-inspired WebUI design system under permissive terms.
-- **People:** safer access to personally or organizationally controlled systems can support remote work, self-hosting, education, research, and maintenance while reducing unnecessary public exposure.
+- **对开源社区：**提供 MIT 许可的密文会合、端到端加密 TCP 转发、有界 Socket 生命周期和可操作重连机制参考实现。
+- **对安全审阅者和学习者：**公开协议、威胁模型、元数据、并发和真实 Socket 测试资料，同时明确保证范围与非目标。
+- **对运维者和小团队：**用单二进制和浏览器管理访问自己拥有的服务，避免把每个内网服务直接暴露到公网。
+- **对全球参与者：**中英文 WebUI 与 12 语种图文手册降低学习、部署、审阅和参与贡献的语言及平台门槛。
+- **对其他项目：**以宽松许可提供可复用的配置示例、测试模式、错误引导方式和 Tahoe 风格 WebUI 设计体系。
+- **对人的实际帮助：**在减少不必要公网暴露的同时，为远程工作、自托管、教育、研究和设备维护提供更安全的访问路径。
 
-That value depends on transparent limits, informed consent, legitimate use, and responsible operation.
+这些价值建立在限制透明、知情同意、合法用途和负责任运维之上。
 
-## Verification
+## 验证
 
 ```bash
 go test -count=1 ./...
@@ -276,10 +280,10 @@ npm run check
 npm run build
 ```
 
-The integration suite starts a real HTTP/WebSocket Relay, a Target-side TCP echo service, and both clients, then verifies concurrent independent streams. Lifecycle coverage includes Target restart, occupied Edge-listener recovery, bounded shutdown, waiting-client replacement, connection churn, pairing-timeout boundaries, late-event suppression, plaintext-marker absence, and ciphertext-tamper rejection.
+集成测试会启动真实 HTTP/WebSocket Relay、Target 侧 TCP Echo 服务和两端客户端，再验证多条相互独立的并发流。生命周期测试还覆盖 Target 重启、Edge 监听端口占用恢复、有界停止、等待客户端替换、连接抖动、配对超时边界、迟到事件抑制、明文标记不可见和密文篡改拒绝。
 
-## Name and license
+## 名称与许可证
 
-**MoleX** combines the mole's tunnel-building character with **X** as transfer, cross, and exchange: a compact name for moving owned TCP services through an encrypted rendezvous path.
+**MoleX** 把鼹鼠构建隧道的特征与代表 **transfer、cross、exchange** 的 **X** 结合起来，用一个简洁名称表达“通过加密会合路径转发自己拥有的 TCP 服务”。
 
-The source code and included documentation are available under the [MIT License](LICENSE). MIT permits use, modification, distribution, and commercial reuse subject to its notice and warranty terms; it does not automatically grant rights to project names, logos, or trademarks.
+源代码和仓库内文档采用 [MIT 许可证](LICENSE)。MIT 允许在保留许可与免责声明的前提下使用、修改、分发和商业复用；软件许可证不会自动授予项目名称、图标或商标的使用权。
