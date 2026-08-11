@@ -7,18 +7,18 @@
 <p align="center"><strong>通过一个公网 WSS 入口安全转发 TCP。</strong><br>Relay、Edge、Target 共用一个 Go 单二进制，通过浏览器或 CLI 管理。</p>
 
 <p align="center">
-  <a href=".github/workflows/ci.yml"><img alt="Go 与 WebUI 持续集成" src="https://img.shields.io/badge/CI-Go%20%2B%20WebUI-2088FF?style=flat-square&logo=githubactions&logoColor=white"></a>
+  <a href="https://github.com/suifei/molex/actions/workflows/ci.yml"><img alt="CI 状态" src="https://github.com/suifei/molex/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <img alt="Go 1.25 或更新版本" src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat-square&logo=go&logoColor=white">
   <img alt="TCP over WSS" src="https://img.shields.io/badge/transport-TCP%20over%20WSS-30A46C?style=flat-square">
   <a href="LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/license-MIT-24292F?style=flat-square"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/suifei/molex/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/suifei/molex?style=flat-square&logo=github"></a>
-  <a href="https://github.com/suifei/molex/forks"><img alt="GitHub Forks" src="https://img.shields.io/github/forks/suifei/molex?style=flat-square&logo=github"></a>
-  <a href="https://github.com/suifei/molex/issues"><img alt="待处理 Issues" src="https://img.shields.io/github/issues/suifei/molex?style=flat-square"></a>
-  <a href="https://github.com/suifei/molex/pulls"><img alt="待处理 Pull Requests" src="https://img.shields.io/github/issues-pr/suifei/molex?style=flat-square"></a>
-  <a href="https://github.com/suifei/molex/graphs/contributors"><img alt="贡献者" src="https://img.shields.io/github/contributors/suifei/molex?style=flat-square"></a>
+  <a href="https://github.com/suifei/molex/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/suifei/molex?style=flat-square&logo=github&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/forks"><img alt="GitHub Forks" src="https://img.shields.io/github/forks/suifei/molex?style=flat-square&logo=github&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/issues"><img alt="待处理 Issues" src="https://img.shields.io/github/issues/suifei/molex?style=flat-square&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/pulls"><img alt="待处理 Pull Requests" src="https://img.shields.io/github/issues-pr/suifei/molex?style=flat-square&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/graphs/contributors"><img alt="贡献者" src="https://img.shields.io/github/contributors/suifei/molex?style=flat-square&cacheSeconds=60"></a>
 </p>
 
 <p align="center">

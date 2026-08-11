@@ -7,18 +7,18 @@
 <p align="center"><strong>Secure TCP transit through one public WSS entrypoint.</strong><br>Relay, Edge, and Target in one Go binary, managed from the browser or CLI.</p>
 
 <p align="center">
-  <a href=".github/workflows/ci.yml"><img alt="Go and WebUI continuous integration" src="https://img.shields.io/badge/CI-Go%20%2B%20WebUI-2088FF?style=flat-square&logo=githubactions&logoColor=white"></a>
+  <a href="https://github.com/suifei/molex/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/suifei/molex/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <img alt="Go 1.25 or newer" src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat-square&logo=go&logoColor=white">
   <img alt="TCP over WSS" src="https://img.shields.io/badge/transport-TCP%20over%20WSS-30A46C?style=flat-square">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-24292F?style=flat-square"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/suifei/molex/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/suifei/molex?style=flat-square&logo=github"></a>
-  <a href="https://github.com/suifei/molex/forks"><img alt="GitHub forks" src="https://img.shields.io/github/forks/suifei/molex?style=flat-square&logo=github"></a>
-  <a href="https://github.com/suifei/molex/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/suifei/molex?style=flat-square"></a>
-  <a href="https://github.com/suifei/molex/pulls"><img alt="Open pull requests" src="https://img.shields.io/github/issues-pr/suifei/molex?style=flat-square"></a>
-  <a href="https://github.com/suifei/molex/graphs/contributors"><img alt="Contributors" src="https://img.shields.io/github/contributors/suifei/molex?style=flat-square"></a>
+  <a href="https://github.com/suifei/molex/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/suifei/molex?style=flat-square&logo=github&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/forks"><img alt="GitHub forks" src="https://img.shields.io/github/forks/suifei/molex?style=flat-square&logo=github&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/suifei/molex?style=flat-square&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/pulls"><img alt="Open pull requests" src="https://img.shields.io/github/issues-pr/suifei/molex?style=flat-square&cacheSeconds=60"></a>
+  <a href="https://github.com/suifei/molex/graphs/contributors"><img alt="Contributors" src="https://img.shields.io/github/contributors/suifei/molex?style=flat-square&cacheSeconds=60"></a>
 </p>
 
 <p align="center">
