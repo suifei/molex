@@ -1,0 +1,27 @@
+# Go
+/bin/
+/dist/
+/build/
+*.exe
+*.test
+*.out
+
+# Frontend
+/frontend/node_modules/
+/frontend/dist/
+/internal/webui/dist/*
+!/internal/webui/dist/.keep
+/frontend/coverage/
+/playwright-report/
+/test-results/
+
+# Local configuration and secrets
+/molex.json
+/AGENTS.md
+*.local.json
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

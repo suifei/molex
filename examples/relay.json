@@ -1,0 +1,6 @@
+{
+  "mode": "relay",
+  "token": "mx1_replace-with-the-relay-token",
+  "listen": "127.0.0.1:8080",
+  "tunnel": {}
+}

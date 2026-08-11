@@ -1,0 +1,13 @@
+{
+  "mode": "punch",
+  "role": "edge",
+  "secret": "mx1_replace-with-the-shared-payload-secret",
+  "token": "mx1_replace-with-the-relay-token",
+  "listen": "127.0.0.1:2222",
+  "remote": "wss://molex.example.com/ws/session",
+  "tunnel": {
+    "local": "127.0.0.1:22",
+    "remote": "home-ssh",
+    "name": "office-edge"
+  }
+}

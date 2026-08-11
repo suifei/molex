@@ -1,0 +1,36 @@
+molex.example.com {
+    tls operator@example.com
+
+    @molex_session {
+        path /ws/session
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+
+    handle @molex_session {
+        reverse_proxy 127.0.0.1:8080
+    }
+
+    handle {
+        respond "Hello, world." 200
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        -Server
+    }
+}
+
+admin.molex.example.com {
+    tls operator@example.com
+    reverse_proxy 127.0.0.1:9090
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        -Server
+    }
+}

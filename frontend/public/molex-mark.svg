@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">MoleX</title>
+  <desc id="desc">Crossed tunnel routes meeting at a compact central hub</desc>
+  <rect width="64" height="64" rx="10" fill="#15191c"/>
+  <path d="M12 13 51 52M52 13 13 52" fill="none" stroke="#58b8aa" stroke-width="8" stroke-linecap="square"/>
+  <path d="M14 13 51 50M50 13 13 50" fill="none" stroke="#20282b" stroke-width="2" stroke-linecap="square" opacity=".9"/>
+  <rect x="20" y="20" width="24" height="24" rx="7" fill="#edf2ef" stroke="#15191c" stroke-width="3"/>
+  <path d="m25 26 7 6 7-6M25 38l7-6 7 6" fill="none" stroke="#15191c" stroke-width="3.5" stroke-linecap="square" stroke-linejoin="bevel"/>
+  <path d="M29 38h6l-3 4z" fill="#58b8aa"/>
+</svg>

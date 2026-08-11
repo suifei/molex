@@ -1,0 +1,1 @@
+Kept so go:embed compiles before frontend assets are built.
