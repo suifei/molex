@@ -249,6 +249,71 @@ func TestMultipleEdgesAndTargetsShareOneRouteWithoutCrossTalk(t *testing.T) {
 	}
 }
 
+func TestMultipleEdgesQueueForSingleTargetAndRecoverFIFO(t *testing.T) {
+	echoAddress, closeEcho := startEchoServer(t)
+	defer closeEcho()
+
+	remote, closeRelay := startTestRelay(t)
+	defer closeRelay()
+	targetConfig, edgeConfig := testClientConfigs(remote, echoAddress)
+	targetConfig.Tunnel.Name = "shared-target"
+	edgeConfig.Tunnel.Name = "shared-edge"
+	retry := integrationRetrySettings()
+
+	targetCtx, stopTarget := context.WithCancel(context.Background())
+	targetEvents := make(chan telemetry.Event, 64)
+	targetErrors := make(chan error, 1)
+	go func() {
+		targetErrors <- run(targetCtx, targetConfig, telemetry.ReporterFunc(func(event telemetry.Event) {
+			targetEvents <- event
+		}), retry)
+	}()
+
+	edgeOneCtx, stopEdgeOne := context.WithCancel(context.Background())
+	edgeOneEvents := make(chan telemetry.Event, 64)
+	edgeOneErrors := make(chan error, 1)
+	go func() {
+		edgeOneErrors <- run(edgeOneCtx, edgeConfig, telemetry.ReporterFunc(func(event telemetry.Event) {
+			edgeOneEvents <- event
+		}), retry)
+	}()
+
+	firstReady := waitForClientEvent(t, edgeOneEvents, "edge_listening", 5*time.Second)
+	assertEchoRoundTrip(t, firstReady.Listen, []byte("single-target-first-edge"))
+
+	edgeTwoCtx, stopEdgeTwo := context.WithCancel(context.Background())
+	edgeTwoEvents := make(chan telemetry.Event, 64)
+	edgeTwoErrors := make(chan error, 1)
+	go func() {
+		edgeTwoErrors <- run(edgeTwoCtx, edgeConfig, telemetry.ReporterFunc(func(event telemetry.Event) {
+			edgeTwoEvents <- event
+		}), retry)
+	}()
+
+	// The only Target session is already paired, so the second Edge must stay
+	// in connecting/waiting state and must not expose its local listener yet.
+	select {
+	case event := <-edgeTwoEvents:
+		if event.Type == "edge_listening" {
+			t.Fatalf("second Edge started listening while the only Target was occupied: %#v", event)
+		}
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	stopEdgeOne()
+	assertClientStopped(t, edgeOneErrors, "first edge")
+
+	// Target reconnects after the first pair closes; FIFO pairing should now
+	// promote the waiting second Edge and make its listener usable.
+	secondReady := waitForClientEvent(t, edgeTwoEvents, "edge_listening", 5*time.Second)
+	assertEchoRoundTrip(t, secondReady.Listen, []byte("single-target-second-edge"))
+
+	stopEdgeTwo()
+	stopTarget()
+	assertClientStopped(t, edgeTwoErrors, "second edge")
+	assertClientStopped(t, targetErrors, "target")
+}
+
 func TestEdgeReconnectsAfterTargetRestart(t *testing.T) {
 	echoAddress, closeEcho := startEchoServer(t)
 	defer closeEcho()
