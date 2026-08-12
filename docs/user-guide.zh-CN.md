@@ -13,7 +13,7 @@ MoleX 是一个 Go 编写的单二进制安全 TCP 传输枢纽。Edge 和 Targe
 主要特性：
 
 - 一个公网 WSS 入口承载任意数量的独立路由；同一 `channel + secret` 可有多个 Edge 和 Target，Relay 按到达顺序一对一 FIFO 配对。
-- Target 可通过 `tunnel.pool` 启动 1–64 条独立 WSS 会话；默认值为 1，设置为 2 或更高时，一个 Target 进程可以服务多个 Edge。
+- Target 支持多个 Edge 接入。同一个 Target 进程默认使用 `tunnel.pool: 0` 按需扩容：每配对一个 Edge 就补充下一条独立 WSS 会话，最多 65,535 条；也可以显式设置固定池大小 1–65,535。
 - 每条路由在一条 WSS 会话中通过 yamux 承载最多 256 条并发 TCP 流。
 - TLS 1.3 内层再使用 X25519、HKDF-SHA256 和 AES-256-GCM。
 - Relay 准入令牌与 Edge/Target 端到端密钥相互独立。
@@ -250,7 +250,7 @@ ssh -N -L 9090:127.0.0.1:9090 user@molex-host
 | 字段 | 用途 |
 | --- | --- |
 | 节点名称 | 来自 `tunnel.name` 的展示标签，允许多个客户端同名；连接由 peer ID 区分 |
-| Target 会话池 | `tunnel.pool`，Target 的独立出站会话数量，范围 1–64，默认 1 |
+| Target 会话池 | `tunnel.pool`，Target 的独立出站会话数量；`0`（默认）按需扩容，最多 65,535，固定值支持 1–65,535 |
 | 来源 IP | 直接 Socket 地址，或可信回环代理转发的真实 IP |
 | 角色/状态 | Edge 或 Target；等待中或已配对 |
 | 转发端点 | Edge 的本地监听或 Target 的目标服务 |

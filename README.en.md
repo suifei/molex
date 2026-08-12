@@ -198,7 +198,7 @@ The Web console controls the selected runtime in-process; it does not spawn anot
 | `listen` | Relay and Edge | Relay HTTP listener or local Edge TCP listener. |
 | `remote` | Clients | Relay `wss://` endpoint. Plain `ws://` is restricted to loopback. |
 | `tunnel` | Clients | `local` is the Target service, `remote` is the shared channel, and optional `name` labels the node. The OS hostname is used when `name` is empty. |
-| `tunnel.pool` | Target clients | Optional number of independent WSS sessions, from 1 to 64 (default 1). A value above 1 lets one Target process serve multiple Edge clients; every slot keeps separate encryption state. |
+| `tunnel.pool` | Target clients | Target session pool. Default `0` enables demand-driven growth: after a slot pairs with an Edge, Target opens the next independent WSS session, up to 65,535; fixed values 1–65,535 are also accepted. |
 
 Unknown JSON fields are rejected. Client secrets must contain at least 16 characters; `molex config init` generates 32 random bytes encoded as URL-safe Base64.
 

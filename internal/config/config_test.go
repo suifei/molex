@@ -145,7 +145,7 @@ func TestTargetPoolDefaultsAndBounds(t *testing.T) {
 	cfg.Tunnel.Pool = 0
 	cfg = cfg.Normalized()
 	if cfg.Tunnel.Pool != DefaultTargetPool {
-		t.Fatalf("normalized target pool = %d, want %d", cfg.Tunnel.Pool, DefaultTargetPool)
+		t.Fatalf("normalized adaptive target pool = %d, want %d", cfg.Tunnel.Pool, DefaultTargetPool)
 	}
 }
 

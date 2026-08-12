@@ -30,7 +30,7 @@ npm run build
 
 Additional recovery simulations use the same real sockets and protocol stack:
 
-- run one Target process with a two-slot session pool and two same-channel Edge processes, then verify both independent encrypted routes transfer concurrent payloads without cross-talk;
+- run one Target process in adaptive pool mode (`tunnel.pool: 0`) with multiple same-channel Edge processes, then verify each Edge is paired by an independent encrypted session and can transfer payloads without cross-talk;
 - stop Target after a successful flow, observe Edge leave the listening state, restart Target, and verify a new Edge listener forwards traffic;
 - occupy the configured Edge address, confirm the retry event tells the operator how to release it, free the address, and verify Edge starts listening without a process restart.
 

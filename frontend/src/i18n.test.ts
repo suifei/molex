@@ -36,6 +36,9 @@ describe("runtime message localization", () => {
   });
 
   it("localizes Target session pool progress and nested retry guidance", () => {
+    expect(localizeRuntimeMessage("Connecting adaptive Target session pool (up to 65535 sessions)", "zh-CN")).toBe(
+      "正在连接按需目标会话池（最多 65535 条会话）",
+    );
     expect(localizeRuntimeMessage("Connecting Target session pool (4 sessions)", "zh-CN")).toBe(
       "正在连接目标会话池（4 条会话）",
     );

@@ -25,8 +25,8 @@ const (
 	RoleTarget = "target"
 
 	DefaultWebSocketPath = "/ws/session"
-	DefaultTargetPool    = 1
-	MaxTargetPool        = 64
+	DefaultTargetPool    = 0
+	MaxTargetPool        = 65535
 )
 
 // Config deliberately keeps no more than seven top-level fields.
@@ -245,8 +245,8 @@ func validateTunnelRoute(role, listen, local, remote, name string, pool int, pre
 		if err := validateAddress(local); err != nil {
 			problems = append(problems, prefix+".local: "+err.Error())
 		}
-		if pool < 1 || pool > MaxTargetPool {
-			problems = append(problems, fmt.Sprintf("%s.pool must be between 1 and %d", prefix, MaxTargetPool))
+		if pool < 0 || pool > MaxTargetPool {
+			problems = append(problems, fmt.Sprintf("%s.pool must be 0 (auto) or between 1 and %d", prefix, MaxTargetPool))
 		}
 	}
 	return problems

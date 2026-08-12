@@ -81,7 +81,7 @@ Only the 32-byte result is sent to the relay. Neither the literal channel nor th
 
 The route key is stable for a given secret and channel. It therefore lets the relay correlate reconnections. A low-entropy secret also permits offline guessing if an observer already knows likely channel values. Use the generated 32-byte secret.
 
-Target may run a bounded session pool with `tunnel.pool` (1–64, default 1). Pool slots are separate outbound WebSockets with independent hello packets, ephemeral X25519 keys, AES-GCM nonce state, and yamux sessions; the Relay pairs each slot independently. This avoids mixing encrypted sessions or stream namespaces while allowing one Target process to serve multiple Edge clients.
+Target supports one-to-many Edge access. With `tunnel.pool: 0` (the default), it starts one outbound session and opens the next session only after the previous slot is paired, up to 65,535 slots. A fixed pool from 1 to 65,535 is also accepted. Every slot has an independent WebSocket, hello packet, ephemeral X25519 keys, AES-GCM nonce state, and yamux session; the Relay pairs each slot independently without mixing stream namespaces.
 
 ## Handshake
 

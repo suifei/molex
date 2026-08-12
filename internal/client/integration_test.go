@@ -256,6 +256,7 @@ func TestMultipleEdgesQueueForSingleTargetAndRecoverFIFO(t *testing.T) {
 	remote, closeRelay := startTestRelay(t)
 	defer closeRelay()
 	targetConfig, edgeConfig := testClientConfigs(remote, echoAddress)
+	targetConfig.Tunnel.Pool = config.DefaultTargetPool
 	targetConfig.Tunnel.Name = "shared-target"
 	edgeConfig.Tunnel.Name = "shared-edge"
 	retry := integrationRetrySettings()
@@ -419,6 +420,7 @@ func testClientConfigs(remote, targetAddress string) (config.Config, config.Conf
 	target := base
 	target.Role = config.RoleTarget
 	target.Tunnel.Local = targetAddress
+	target.Tunnel.Pool = 1
 	edge := base
 	edge.Role = config.RoleEdge
 	edge.Listen = "127.0.0.1:0"

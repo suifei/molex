@@ -15,7 +15,7 @@ const defaultConfig: Config = {
     local: "127.0.0.1:22",
     remote: "home-ssh",
     name: "",
-    pool: 1,
+    pool: 0,
     rules: [],
   },
 };
@@ -65,7 +65,7 @@ function validateMock(config: Config): ValidationResult {
 			if (config.role === "target" && !route.local.trim()) errors.push(`${prefix}.local: address is required`);
 			if (new TextEncoder().encode(route.name.trim()).length > 64) errors.push(`${prefix}.name: must be at most 64 bytes`);
 			if (/\p{Cc}/u.test(route.name)) errors.push(`${prefix}.name: must not contain control characters`);
-			if (config.role === "target" && (!Number.isInteger(route.pool ?? 1) || (route.pool ?? 1) < 1 || (route.pool ?? 1) > 64)) errors.push(`${prefix}.pool must be between 1 and 64`);
+			if (config.role === "target" && (!Number.isInteger(route.pool ?? 0) || (route.pool ?? 0) < 0 || (route.pool ?? 0) > 65535)) errors.push(`${prefix}.pool must be 0 (auto) or between 1 and 65535`);
 		}
   }
   if (config.token && config.token.trim().length < 16) errors.push("token must contain at least 16 characters when set");

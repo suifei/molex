@@ -41,7 +41,7 @@ export const copy = {
     encryptedHub: "Encrypted hub",
     channel: "Channel",
     targetService: "Target service",
-    targetPool: "Target session pool",
+    targetPool: "Target session pool (0 = auto, max 65,535)",
     forwardingRules: "Forwarding rules",
     forwardingRulesDescription: "Run several independent Edge or Target routes from this one Web console.",
     addRule: "Add rule",
@@ -167,7 +167,7 @@ export const copy = {
     encryptedHub: "加密枢纽",
     channel: "通道",
     targetService: "目标服务",
-    targetPool: "目标会话池",
+    targetPool: "目标会话池（0 = 按需扩容，最多 65,535）",
     forwardingRules: "转发规则",
     forwardingRulesDescription: "在同一个 Web 控制台中运行多条相互独立的 Edge 或 Target 路由。",
     addRule: "新增规则",
@@ -276,7 +276,7 @@ const zhValidationErrors: Record<string, string> = {
 	"tunnel.name: must be at most 64 bytes": "节点名称最多允许 64 字节",
   "tunnel.name: must not contain control characters": "节点名称不能包含控制字符",
   "tunnel.name: must be valid UTF-8": "节点名称必须是有效文本",
-  "tunnel.pool must be between 1 and 64": "目标会话池必须在 1 到 64 之间",
+  "tunnel.pool must be 0 (auto) or between 1 and 65535": "目标会话池填 0 表示按需扩容，也可以填写 1 到 65535",
   "web password must contain at least 12 characters": "管理密码至少需要 12 个字符",
   "tunnel.local: address is required": "目标服务地址不能为空",
   "tunnel.local: must use host:port form": "目标服务地址必须使用 host:port 格式",
@@ -365,6 +365,8 @@ export function localizeRuntimeMessage(message: string, locale: Locale): string 
   if (locale === "en") return message;
   if (zhRuntimeMessages[message]) return zhRuntimeMessages[message];
 
+  const adaptivePool = message.match(/^Connecting adaptive Target session pool \(up to (\d+) sessions\)$/);
+  if (adaptivePool) return `正在连接按需目标会话池（最多 ${adaptivePool[1]} 条会话）`;
   const poolConnecting = message.match(/^Connecting Target session pool \((\d+) sessions\)$/);
   if (poolConnecting) return `正在连接目标会话池（${poolConnecting[1]} 条会话）`;
 

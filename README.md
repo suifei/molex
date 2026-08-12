@@ -198,7 +198,7 @@ Web 控制台在当前进程内控制所选运行时，不会创建另一个 Mol
 | `listen` | Relay 和 Edge | Relay HTTP 监听地址或 Edge 本地 TCP 监听地址。 |
 | `remote` | 客户端 | Relay `wss://` 地址；明文 `ws://` 仅允许回环地址。 |
 | `tunnel` | 客户端 | `local` 是 Target 服务，`remote` 是共享通道，可选的 `name` 用于标记节点；留空时使用操作系统主机名。 |
-| `tunnel.pool` | Target 客户端 | 可选的独立 WSS 会话数量，范围 1–64，默认 1。设置为大于 1 可让一个 Target 进程服务多个 Edge；每个槽使用独立加密会话。 |
+| `tunnel.pool` | Target 客户端 | Target 会话池。默认 `0` 表示按需扩容：每配对一个 Edge 就补充下一条独立 WSS 会话，最多 65,535 条；也可显式填写 1–65,535。 |
 
 配置解析会拒绝未知字段。客户端密钥至少需要 16 个字符；`molex config init` 默认生成 32 字节随机值并使用 URL 安全 Base64 编码。
 

@@ -45,7 +45,7 @@ const emptyConfig: Config = {
   token: "",
   listen: "127.0.0.1:2222",
   remote: "wss://molex.example.com/ws/session",
-  tunnel: { local: "127.0.0.1:22", remote: "home-ssh", name: "", pool: 1, rules: [] },
+  tunnel: { local: "127.0.0.1:22", remote: "home-ssh", name: "", pool: 0, rules: [] },
 };
 
 type Theme = "dark" | "light";
@@ -221,7 +221,7 @@ function App() {
       listen: config.role === "edge" ? `127.0.0.1:${2221 + index}` : "",
       local: config.role === "target" ? "127.0.0.1:22" : "",
       remote: `route-${index}`,
-      pool: 1,
+      pool: 0,
     }]);
   };
   const removeRule = (index: number) => setTunnel("rules", rules.filter((_, ruleIndex) => ruleIndex !== index));
@@ -481,7 +481,7 @@ function App() {
                     <input id="local" value={config.tunnel.local} onChange={(event) => setTunnel("local", event.target.value)} disabled={isRunning} spellCheck={false} />
                   </Field>
                   <Field label={text.targetPool} htmlFor="target-pool">
-                    <input id="target-pool" type="number" min={1} max={64} step={1} value={config.tunnel.pool ?? 1} onChange={(event) => setTunnel("pool", Number(event.target.value))} disabled={isRunning} />
+                    <input id="target-pool" type="number" min={0} max={65535} step={1} value={config.tunnel.pool ?? 0} onChange={(event) => setTunnel("pool", Number(event.target.value))} disabled={isRunning} />
                   </Field>
                 </>
               )}
@@ -523,7 +523,7 @@ function App() {
 											<label><span>{text.nodeName}</span><input value={rule.name} onChange={(event) => updateRule(index, "name", event.target.value)} disabled={isRunning} /></label>
 											<label><span>{text.channel}</span><input value={rule.remote} onChange={(event) => updateRule(index, "remote", event.target.value)} disabled={isRunning} /></label>
 											{config.role === "edge" ? <label><span>{text.localListen}</span><input value={rule.listen} onChange={(event) => updateRule(index, "listen", event.target.value)} disabled={isRunning} /></label> : <label><span>{text.targetService}</span><input value={rule.local} onChange={(event) => updateRule(index, "local", event.target.value)} disabled={isRunning} /></label>}
-											{config.role === "target" && <label className="rule-pool"><span>{text.targetPool}</span><input type="number" min={1} max={64} value={rule.pool ?? 1} onChange={(event) => updateRule(index, "pool", Number(event.target.value))} disabled={isRunning} /></label>}
+											{config.role === "target" && <label className="rule-pool"><span>{text.targetPool}</span><input type="number" min={0} max={65535} value={rule.pool ?? 0} onChange={(event) => updateRule(index, "pool", Number(event.target.value))} disabled={isRunning} /></label>}
 											<button type="button" className="icon-button rule-delete" onClick={() => removeRule(index)} disabled={isRunning} aria-label={text.deleteRule} title={text.deleteRule}><Trash size={17} /></button>
 										</div>
 									))}
