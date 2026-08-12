@@ -249,6 +249,7 @@ MoleX 公开部署、检查、验证和复用所需的资料，不把实现包�
 | 文档 | 用途 |
 | --- | --- |
 | [完整图文使用手册](docs/user-guide.zh-CN.md) | Relay、Edge、Target 三端配置，WebUI 截图，OpenAI/API 与 TCP 场景，UDP 边界，运维、排障和 MIT 条款；顶部可切换 12 种语言。 |
+| [版本升级指南](docs/upgrade-guide.zh-CN.md) | `v0.1.0`、`v0.2.0`、`v0.3.0` 的功能差异、兼容矩阵、三端升级顺序、配置迁移、回滚和验收清单。 |
 | [架构与协议](docs/architecture.md) | 组件拓扑、管理面、加密记录、会合、握手、yamux 生命周期、重连、并发和信任边界。 |
 | [Caddy 部署](docs/deployment-caddy.md) | 生产 WSS 路由、回环监听、HTTPS 管理、systemd、防火墙、健康检查和指导性诊断。 |
 | [安全模型](docs/security.md) | 安全目标与非目标、凭据分离、元数据可见性、TLS 假设、本地暴露、轮换和漏洞报告。 |

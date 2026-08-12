@@ -249,6 +249,7 @@ MoleX publishes the material needed to deploy, inspect, verify, and reuse the pr
 | Document | Use it for |
 | --- | --- |
 | [Complete illustrated user guide](docs/user-guide.md) | Relay/Edge/Target setup, WebUI screenshots, OpenAI/API and TCP recipes, UDP boundaries, operations, troubleshooting, and MIT terms. Available in 12 languages from its header. |
+| [Upgrade guide](docs/upgrade-guide.md) | Differences between `v0.1.0`, `v0.2.0`, and `v0.3.0`, compatibility, role upgrade order, configuration migration, rollback, and acceptance checks. |
 | [Architecture and protocol](docs/architecture.md) | Topology, management plane, encrypted records, rendezvous, handshake, yamux lifecycle, reconnection, concurrency, and trust boundaries. |
 | [Caddy deployment](docs/deployment-caddy.md) | Production WSS routing, loopback listeners, HTTPS management, systemd, firewall rules, health checks, and guided diagnostics. |
 | [Security model](docs/security.md) | Security goals and non-goals, credential separation, metadata visibility, TLS assumptions, local exposure, rotation, and disclosure. |
