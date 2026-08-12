@@ -15,11 +15,14 @@ const defaultConfig: Config = {
     local: "127.0.0.1:22",
     remote: "home-ssh",
     name: "",
+    pool: 1,
+    rules: [],
   },
 };
 
 export interface SessionState {
   authenticated: boolean;
+  setupRequired?: boolean;
   csrfToken?: string;
 }
 
@@ -39,7 +42,8 @@ function loadMockConfig(): Config {
   const stored = localStorage.getItem(STORAGE_KEY);
   if (!stored) return structuredClone(defaultConfig);
   try {
-    return { ...structuredClone(defaultConfig), ...JSON.parse(stored) };
+    const loaded = JSON.parse(stored) as Partial<Config>;
+    return { ...structuredClone(defaultConfig), ...loaded, tunnel: { ...defaultConfig.tunnel, ...(loaded.tunnel ?? {}), rules: loaded.tunnel?.rules ?? [] } };
   } catch {
     return structuredClone(defaultConfig);
   }
@@ -53,8 +57,16 @@ function validateMock(config: Config): ValidationResult {
     if (config.secret.trim().length < 16) errors.push("secret must contain at least 16 characters");
     if (!config.tunnel.remote.trim()) errors.push("tunnel.remote channel is required");
     if (config.role === "target" && !config.tunnel.local.trim()) errors.push("tunnel.local: address is required");
-		if (new TextEncoder().encode(config.tunnel.name.trim()).length > 64) errors.push("tunnel.name: must be at most 64 bytes");
-		if (/\p{Cc}/u.test(config.tunnel.name)) errors.push("tunnel.name: must not contain control characters");
+		const routes = config.tunnel.rules?.length ? config.tunnel.rules : [{ ...config.tunnel, listen: config.listen }];
+		for (const [index, route] of routes.entries()) {
+			const prefix = config.tunnel.rules?.length ? `tunnel.rules[${index}]` : "tunnel";
+			if (!route.remote.trim()) errors.push(`${prefix}.remote channel is required`);
+			if (config.role === "edge" && !route.listen.trim()) errors.push(`${prefix}.listen: address is required`);
+			if (config.role === "target" && !route.local.trim()) errors.push(`${prefix}.local: address is required`);
+			if (new TextEncoder().encode(route.name.trim()).length > 64) errors.push(`${prefix}.name: must be at most 64 bytes`);
+			if (/\p{Cc}/u.test(route.name)) errors.push(`${prefix}.name: must not contain control characters`);
+			if (config.role === "target" && (!Number.isInteger(route.pool ?? 1) || (route.pool ?? 1) < 1 || (route.pool ?? 1) > 64)) errors.push(`${prefix}.pool must be between 1 and 64`);
+		}
   }
   if (config.token && config.token.trim().length < 16) errors.push("token must contain at least 16 characters when set");
   return { valid: errors.length === 0, errors };
@@ -94,6 +106,15 @@ export const api = {
   async login(password: string): Promise<void> {
     if (previewMode) return;
     const session = await request<SessionState>("/api/login", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    });
+    csrfToken = session.csrfToken ?? "";
+  },
+
+  async setup(password: string): Promise<void> {
+    if (previewMode) return;
+    const session = await request<SessionState>("/api/setup", {
       method: "POST",
       body: JSON.stringify({ password }),
     });

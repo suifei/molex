@@ -34,7 +34,34 @@ func run(ctx context.Context, cfg config.Config, reporter telemetry.Reporter, re
 	if cfg.Mode != config.ModePunch {
 		return errors.New("client requires punch mode")
 	}
+	routes := cfg.ClientRoutes()
+	if len(routes) > 1 {
+		return runRouteSet(ctx, routes, reporter, retry)
+	}
+	return runSingleRoute(ctx, routes[0], reporter, retry)
+}
 
+func runRouteSet(ctx context.Context, routes []config.Config, reporter telemetry.Reporter, retry retrySettings) error {
+	var workers sync.WaitGroup
+	workers.Add(len(routes))
+	for _, route := range routes {
+		go func(route config.Config) {
+			defer workers.Done()
+			_ = runSingleRoute(ctx, route, reporter, retry)
+		}(route)
+	}
+	workers.Wait()
+	return nil
+}
+
+func runSingleRoute(ctx context.Context, cfg config.Config, reporter telemetry.Reporter, retry retrySettings) error {
+	if cfg.Role == config.RoleTarget && cfg.Tunnel.Pool > 1 {
+		return runTargetPool(ctx, cfg, reporter, retry)
+	}
+	return runSessionLoop(ctx, cfg, reporter, retry)
+}
+
+func runSessionLoop(ctx context.Context, cfg config.Config, reporter telemetry.Reporter, retry retrySettings) error {
 	policy := newRetryPolicy(retry)
 	for {
 		telemetry.Emit(reporter, telemetry.Event{
@@ -67,6 +94,84 @@ func run(ctx context.Context, cfg config.Config, reporter telemetry.Reporter, re
 		case <-timer.C:
 		}
 	}
+}
+
+func runTargetPool(ctx context.Context, cfg config.Config, reporter telemetry.Reporter, retry retrySettings) error {
+	pool := newTargetPoolReporter(cfg.Tunnel.Pool, reporter)
+	telemetry.Emit(reporter, telemetry.Event{
+		Type:        "client_connecting",
+		Level:       "info",
+		State:       "connecting",
+		Message:     fmt.Sprintf("Connecting Target session pool (%d sessions)", cfg.Tunnel.Pool),
+		ClearListen: true,
+	})
+
+	var workers sync.WaitGroup
+	workers.Add(cfg.Tunnel.Pool)
+	for slot := range cfg.Tunnel.Pool {
+		go func() {
+			defer workers.Done()
+			_ = runSessionLoop(ctx, cfg, pool.slot(slot), retry)
+		}()
+	}
+	workers.Wait()
+	return nil
+}
+
+type targetPoolReporter struct {
+	mu       sync.Mutex
+	total    int
+	ready    []bool
+	reporter telemetry.Reporter
+}
+
+func newTargetPoolReporter(total int, reporter telemetry.Reporter) *targetPoolReporter {
+	return &targetPoolReporter{total: total, ready: make([]bool, total), reporter: reporter}
+}
+
+func (p *targetPoolReporter) slot(slot int) telemetry.Reporter {
+	return telemetry.ReporterFunc(func(event telemetry.Event) {
+		p.report(slot, event)
+	})
+}
+
+func (p *targetPoolReporter) report(slot int, event telemetry.Event) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	switch event.Type {
+	case "client_connecting":
+		return
+	case "target_ready":
+		if !p.ready[slot] {
+			p.ready[slot] = true
+		}
+		connected := p.readyCount()
+		event.Type = "target_pool_ready"
+		event.State = "running"
+		event.Message = fmt.Sprintf("Target session pool is ready: %d of %d sessions connected", connected, p.total)
+	case "client_reconnecting":
+		if p.ready[slot] {
+			p.ready[slot] = false
+		}
+		connected := p.readyCount()
+		if connected > 0 {
+			event.Type = "target_pool_degraded"
+			event.State = "running"
+			event.Message = fmt.Sprintf("Target session pool is degraded: %d of %d sessions connected. %s", connected, p.total, event.Message)
+		}
+	}
+	telemetry.Emit(p.reporter, event)
+}
+
+func (p *targetPoolReporter) readyCount() int {
+	ready := 0
+	for _, connected := range p.ready {
+		if connected {
+			ready++
+		}
+	}
+	return ready
 }
 
 func RunOnce(ctx context.Context, cfg config.Config, reporter telemetry.Reporter) error {

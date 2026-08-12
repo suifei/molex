@@ -7,6 +7,16 @@ export interface TunnelConfig {
   local: string;
   remote: string;
   name: string;
+  pool?: number;
+  rules?: TunnelRule[];
+}
+
+export interface TunnelRule {
+  name: string;
+  listen: string;
+  local: string;
+  remote: string;
+  pool?: number;
 }
 
 export interface Config {

@@ -63,7 +63,7 @@ Relay 只负责会合节点和转发不透明二进制帧。它不会收到端�
 
 | 设计选择 | 实际效果 |
 | --- | --- |
-| **单公网入口** | 多条并发 TCP 流通过 yamux 共用一条 WSS 会话，不需要为每个服务开放公网端口。 |
+| **单公网入口** | 多条并发 TCP 流通过 yamux 共用 WSS；同一通道可容纳多个 Edge/Target 会话，不需要为每个服务开放公网端口。 |
 | **中继只见密文** | Edge 与 Target 在 TLS 内使用 X25519、HKDF-SHA256 和 AES-256-GCM；Relay 只转发经过认证的密文。 |
 | **单二进制、三种职责** | 同一个跨平台 Go 程序可作为 Relay、Edge 或 Target 运行，只需要一份小型 JSON 配置。 |
 | **三端统一 Web 管理** | Relay 与两种客户端共用带认证的中英文浏览器控制台，同时保留 CLI 运行方式。 |
@@ -86,7 +86,7 @@ flowchart LR
     Target <-->|"TCP"| Service["内网服务"]
 ```
 
-两端客户端都主动向外连接。Relay 配对通道相同、角色互补的 Edge 与 Target 后，应用数据通过以下协议栈全双工传输：
+两端客户端都主动向外连接。Relay 为同一不透明路由维护 Edge/Target FIFO 等待队列，将每个 Edge 与最早等待的 Target 配成独立加密会话；Node name 只是可重复的展示标签，连接由 peer ID 区分。配对后，应用数据通过以下协议栈全双工传输：
 
 ```text
 TCP 流 -> yamux 逻辑流 -> AES-256-GCM 记录 -> WebSocket 二进制帧 -> TLS 1.3
@@ -120,7 +120,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-go build -trimpath -ldflags "-s -w -X main.version=0.1.0" -o bin/molex .
+go build -trimpath -ldflags "-s -w -X main.version=0.2.0" -o bin/molex .
 ```
 
 必须先构建前端，再构建 Go 程序，确保当前 Web 资源被嵌入二进制。
@@ -198,6 +198,7 @@ Web 控制台在当前进程内控制所选运行时，不会创建另一个 Mol
 | `listen` | Relay 和 Edge | Relay HTTP 监听地址或 Edge 本地 TCP 监听地址。 |
 | `remote` | 客户端 | Relay `wss://` 地址；明文 `ws://` 仅允许回环地址。 |
 | `tunnel` | 客户端 | `local` 是 Target 服务，`remote` 是共享通道，可选的 `name` 用于标记节点；留空时使用操作系统主机名。 |
+| `tunnel.pool` | Target 客户端 | 可选的独立 WSS 会话数量，范围 1–64，默认 1。设置为大于 1 可让一个 Target 进程服务多个 Edge；每个槽使用独立加密会话。 |
 
 配置解析会拒绝未知字段。客户端密钥至少需要 16 个字符；`molex config init` 默认生成 32 字节随机值并使用 URL 安全 Base64 编码。
 
@@ -227,7 +228,7 @@ Edge 与 Target 会使用有上限指数退避自动重连，等待时间从约 
 
 每条路由最多同时处理 256 条活跃 yamux 流，超出上限的连接会安全关闭并给出处理建议。停止时先关闭监听和加密会话，再等待已经接纳的任务结束，避免遗留 Socket 协程。
 
-从注册到转发，Relay 为每条 WebSocket 始终只保留一个读取者。等待中的客户端断开后会立即释放角色槽位；单帧写入最长等待 30 秒；超时、断线、转发结束和停止等竞争路径最终都会进入同一个幂等关闭操作。
+从注册到转发，Relay 为每条 WebSocket 始终只保留一个读取者。等待中的客户端断开后会立即从 FIFO 队列移除；单帧写入最长等待 30 秒；超时、断线、转发结束和停止等竞争路径最终都会进入同一个幂等关闭操作。
 
 ## 安全与协议
 

@@ -20,7 +20,7 @@ The two hostnames share Caddy's `443/tcp` listener. The relay data plane and man
 }
 ```
 
-Create a protected file containing a Web password of at least 12 characters, then start the console and relay together:
+On the first run, you can omit `--password-file`: MoleX opens the browser setup screen and writes the password you create to the default private state directory. For unattended services, create a protected file containing a Web password of at least 12 characters, then start the console and relay together:
 
 ```bash
 molex web \
@@ -30,6 +30,8 @@ molex web \
 ```
 
 `--listen` controls the management listener and defaults to `127.0.0.1:9090`. The `listen` field in `molex.json` controls the relay data listener. MoleX rejects a non-loopback management address.
+
+On Windows and macOS, launching `molex` without arguments uses the per-user `MoleX` configuration directory, starts the loopback Web console, and opens the default browser. The browser-based setup is the supported management experience; there is no desktop shell.
 
 ## Caddyfile
 

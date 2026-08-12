@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowClockwise,
+	DownloadSimple,
 	ArrowRight,
   Check,
   CircleNotch,
@@ -19,6 +20,8 @@ import {
   Stop,
   Sun,
   TerminalWindow,
+  Plus,
+  Trash,
   Translate,
   Warning,
 } from "@phosphor-icons/react";
@@ -33,6 +36,7 @@ import {
 } from "./i18n";
 import type { Locale } from "./i18n";
 import type { Config, Mode, RelayPeer, Role, RuntimeEvent, RuntimeStatus } from "./types";
+import type { TunnelRule } from "./types";
 
 const emptyConfig: Config = {
   mode: "punch",
@@ -41,7 +45,7 @@ const emptyConfig: Config = {
   token: "",
   listen: "127.0.0.1:2222",
   remote: "wss://molex.example.com/ws/session",
-  tunnel: { local: "127.0.0.1:22", remote: "home-ssh", name: "" },
+  tunnel: { local: "127.0.0.1:22", remote: "home-ssh", name: "", pool: 1, rules: [] },
 };
 
 type Theme = "dark" | "light";
@@ -69,12 +73,15 @@ function App() {
   );
   const [locale, setLocale] = useState<Locale>(initialLocale);
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [setupRequired, setSetupRequired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [showSecret, setShowSecret] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [notice, setNotice] = useState(false);
+	const [relayDomain, setRelayDomain] = useState("molex.example.com");
+	const [adminDomain, setAdminDomain] = useState("admin.molex.example.com");
 	const [now, setNow] = useState(() => Date.now());
 	const refreshGeneration = useRef(0);
 
@@ -99,7 +106,7 @@ function App() {
 
   const loadConsole = useCallback(async () => {
     const [loadedConfig, loadedStatus, loadedEvents] = await Promise.all([api.getConfig(), api.getStatus(), api.getEvents()]);
-    setConfig({ ...emptyConfig, ...loadedConfig, tunnel: { ...emptyConfig.tunnel, ...loadedConfig.tunnel } });
+    setConfig({ ...emptyConfig, ...loadedConfig, tunnel: { ...emptyConfig.tunnel, ...loadedConfig.tunnel, rules: loadedConfig.tunnel.rules ?? [] } });
     setStatus(loadedStatus);
     setEvents(loadedEvents.slice(-20));
   }, []);
@@ -113,6 +120,7 @@ function App() {
 					await loadConsole();
 					if (mounted) setAuthenticated(true);
 				} else {
+					setSetupRequired(Boolean(session.setupRequired));
 					setAuthenticated(false);
 				}
       })
@@ -195,11 +203,28 @@ function App() {
     setNotice(false);
   };
 
-  const setTunnel = (field: keyof Config["tunnel"], value: string) => {
+  const setTunnel = (field: keyof Config["tunnel"], value: Config["tunnel"][keyof Config["tunnel"]]) => {
     setConfig((current) => ({ ...current, tunnel: { ...current.tunnel, [field]: value } }));
     setErrors([]);
     setNotice(false);
   };
+
+  const rules = config.tunnel.rules ?? [];
+  const updateRule = (index: number, field: keyof TunnelRule, value: string | number) => {
+    const next = rules.map((rule, ruleIndex) => ruleIndex === index ? { ...rule, [field]: value } : rule);
+    setTunnel("rules", next);
+  };
+  const addRule = () => {
+    const index = rules.length + 1;
+    setTunnel("rules", [...rules, {
+      name: `${config.role}-${index}`,
+      listen: config.role === "edge" ? `127.0.0.1:${2221 + index}` : "",
+      local: config.role === "target" ? "127.0.0.1:22" : "",
+      remote: `route-${index}`,
+      pool: 1,
+    }]);
+  };
+  const removeRule = (index: number) => setTunnel("rules", rules.filter((_, ruleIndex) => ruleIndex !== index));
 
   const validate = async () => {
     const result = await api.validateConfig(config);
@@ -251,12 +276,40 @@ function App() {
     }
   };
 
+  const downloadCaddyfile = () => {
+    const relayHost = relayDomain.trim();
+    const adminHost = adminDomain.trim();
+    if (!relayHost || !adminHost) return;
+    const content = `${relayHost} {\n    @molex_session {\n        path /ws/session\n        header Connection *Upgrade*\n        header Upgrade websocket\n    }\n    handle @molex_session {\n        reverse_proxy ${config.listen || "127.0.0.1:8080"}\n    }\n    handle {\n        respond "Hello, world." 200\n    }\n}\n\n${adminHost} {\n    reverse_proxy 127.0.0.1:9090\n}\n`;
+    const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "Caddyfile";
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const login = async (password: string) => {
     setBusy(true);
     setErrors([]);
     try {
       await api.login(password);
       await loadConsole();
+      setAuthenticated(true);
+    } catch (error) {
+      setErrors([messageFrom(error)]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setup = async (password: string) => {
+    setBusy(true);
+    setErrors([]);
+    try {
+      await api.setup(password);
+      await loadConsole();
+      setSetupRequired(false);
       setAuthenticated(true);
     } catch (error) {
       setErrors([messageFrom(error)]);
@@ -300,6 +353,19 @@ function App() {
   }
 
   if (!authenticated) {
+		if (setupRequired) {
+			return (
+				<SetupScreen
+					locale={locale}
+					themePreference={themePreference}
+					busy={busy}
+					errors={errors}
+					onLocaleChange={() => setLocale(locale === "en" ? "zh-CN" : "en")}
+					onThemeChange={() => setThemePreference(nextThemePreference(themePreference))}
+					onSetup={setup}
+				/>
+			);
+		}
     return (
       <LoginScreen
         locale={locale}
@@ -378,6 +444,14 @@ function App() {
                 onToggle={() => setShowToken((value) => !value)}
                 onGenerate={() => void generate("token")}
               />
+						<div className="field full-width caddy-helper">
+							<div className="rule-manager-heading"><div><span className="field-label">{text.caddySetup}</span><p>{text.caddySetupDescription}</p></div><a className="text-link" href="https://caddyserver.com/docs/install" target="_blank" rel="noreferrer">{text.caddyOfficialGuide}</a></div>
+							<div className="caddy-fields">
+								<label><span>{text.relayDomain}</span><input value={relayDomain} onChange={(event) => setRelayDomain(event.target.value)} disabled={isRunning} spellCheck={false} /></label>
+								<label><span>{text.adminDomain}</span><input value={adminDomain} onChange={(event) => setAdminDomain(event.target.value)} disabled={isRunning} spellCheck={false} /></label>
+								<button type="button" className="button secondary-button" onClick={downloadCaddyfile} disabled={!relayDomain.trim() || !adminDomain.trim()}><DownloadSimple size={17} />{text.downloadCaddyfile}</button>
+							</div>
+						</div>
             </div>
           ) : (
             <div className="form-grid">
@@ -402,9 +476,14 @@ function App() {
                   <input id="listen" value={config.listen} onChange={(event) => setField("listen", event.target.value)} disabled={isRunning} spellCheck={false} />
                 </Field>
               ) : (
-                <Field label={text.targetService} htmlFor="local">
-                  <input id="local" value={config.tunnel.local} onChange={(event) => setTunnel("local", event.target.value)} disabled={isRunning} spellCheck={false} />
-                </Field>
+                <>
+                  <Field label={text.targetService} htmlFor="local">
+                    <input id="local" value={config.tunnel.local} onChange={(event) => setTunnel("local", event.target.value)} disabled={isRunning} spellCheck={false} />
+                  </Field>
+                  <Field label={text.targetPool} htmlFor="target-pool">
+                    <input id="target-pool" type="number" min={1} max={64} step={1} value={config.tunnel.pool ?? 1} onChange={(event) => setTunnel("pool", Number(event.target.value))} disabled={isRunning} />
+                  </Field>
+                </>
               )}
 							<SecretField
 								id="token"
@@ -429,6 +508,28 @@ function App() {
                 onGenerate={() => void generate("secret")}
                 wide
               />
+						<div className="field full-width rule-manager">
+							<div className="rule-manager-heading">
+								<div><span className="field-label">{text.forwardingRules}</span><p>{text.forwardingRulesDescription}</p></div>
+								<button type="button" className="button secondary-button compact-command" onClick={addRule} disabled={isRunning}><Plus size={17} />{text.addRule}</button>
+							</div>
+							{rules.length === 0 ? (
+								<div className="rule-empty">{text.singleRuleCompatibility}</div>
+							) : (
+								<div className="rule-list">
+									{rules.map((rule, index) => (
+										<div className="rule-row" key={`${index}-${rule.remote}`}>
+											<div className="rule-index">{index + 1}</div>
+											<label><span>{text.nodeName}</span><input value={rule.name} onChange={(event) => updateRule(index, "name", event.target.value)} disabled={isRunning} /></label>
+											<label><span>{text.channel}</span><input value={rule.remote} onChange={(event) => updateRule(index, "remote", event.target.value)} disabled={isRunning} /></label>
+											{config.role === "edge" ? <label><span>{text.localListen}</span><input value={rule.listen} onChange={(event) => updateRule(index, "listen", event.target.value)} disabled={isRunning} /></label> : <label><span>{text.targetService}</span><input value={rule.local} onChange={(event) => updateRule(index, "local", event.target.value)} disabled={isRunning} /></label>}
+											{config.role === "target" && <label className="rule-pool"><span>{text.targetPool}</span><input type="number" min={1} max={64} value={rule.pool ?? 1} onChange={(event) => updateRule(index, "pool", Number(event.target.value))} disabled={isRunning} /></label>}
+											<button type="button" className="icon-button rule-delete" onClick={() => removeRule(index)} disabled={isRunning} aria-label={text.deleteRule} title={text.deleteRule}><Trash size={17} /></button>
+										</div>
+									))}
+								</div>
+							)}
+						</div>
             </div>
           )}
 
@@ -531,6 +632,57 @@ function App() {
             )}
           </div>
         </aside>
+      </section>
+    </main>
+  );
+}
+
+function SetupScreen({ locale, themePreference, busy, errors, onLocaleChange, onThemeChange, onSetup }: {
+  locale: Locale;
+  themePreference: ThemePreference;
+  busy: boolean;
+  errors: string[];
+  onLocaleChange: () => void;
+  onThemeChange: () => void;
+  onSetup: (password: string) => Promise<void>;
+}) {
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [visible, setVisible] = useState(false);
+  const text = copy[locale];
+  const mismatch = confirmation.length > 0 && password !== confirmation;
+
+  return (
+    <main className="auth-shell">
+      <header className="auth-topbar">
+        <div className="brand-lockup">
+          <img src="./molex-mark.svg" alt="" className="brand-mark" />
+          <div><div className="brand-name">MoleX</div><div className="brand-subtitle">{text.brandSubtitle}</div></div>
+        </div>
+        <div className="topbar-actions">
+          <LanguageButton locale={locale} onClick={onLocaleChange} />
+          <ThemeButton locale={locale} preference={themePreference} onClick={onThemeChange} />
+        </div>
+      </header>
+      <section className="auth-stage">
+        <div className="auth-route" aria-hidden="true">
+          <span className="auth-route-node" /><span className="auth-route-line" /><span className="auth-route-core"><img src="./molex-mark.svg" alt="" /></span><span className="auth-route-line" /><span className="auth-route-node" />
+        </div>
+        <form className="login-panel setup-panel" onSubmit={(event) => { event.preventDefault(); void onSetup(password); }}>
+          <div className="login-kicker"><LockKey size={16} />{text.firstRunSetup}</div>
+          <div className="login-heading"><h1>{text.createPassword}</h1><p>{text.createPasswordDescription}</p></div>
+          <label className="login-field" htmlFor="setup-password">
+            <span>{text.newPassword}</span>
+            <span className="login-password">
+              <input id="setup-password" type={visible ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" autoFocus disabled={busy} minLength={12} required />
+              <button type="button" onClick={() => setVisible((current) => !current)} disabled={busy} aria-label={secretActionLabel(locale, visible ? "hide" : "show", text.newPassword)} title={secretActionLabel(locale, visible ? "hide" : "show", text.newPassword)}>{visible ? <EyeSlash size={18} /> : <Eye size={18} />}</button>
+            </span>
+          </label>
+          <label className="login-field setup-confirm" htmlFor="setup-confirmation"><span>{text.confirmPassword}</span><input id="setup-confirmation" type={visible ? "text" : "password"} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="new-password" disabled={busy} required /></label>
+          <p className={`setup-requirement ${mismatch ? "setup-mismatch" : ""}`}>{mismatch ? text.passwordMismatch : text.passwordRequirement}</p>
+          {errors.length > 0 && <div className="message-strip error-strip login-error" role="alert"><Warning size={18} weight="fill" /><div>{errors.map((error) => <div key={error}>{localizeValidationError(error, locale)}</div>)}</div></div>}
+          <button type="submit" className="button primary-button login-submit" disabled={busy || password.length < 12 || password !== confirmation}>{busy ? <CircleNotch size={18} className="spin" /> : <LockKey size={18} />}{text.finishSetup}</button>
+        </form>
       </section>
     </main>
   );

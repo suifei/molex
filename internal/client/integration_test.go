@@ -159,6 +159,96 @@ func TestThreeEndConcurrentTCPFlow(t *testing.T) {
 	}
 }
 
+func TestMultipleEdgesAndTargetsShareOneRouteWithoutCrossTalk(t *testing.T) {
+	echoAddress, closeEcho := startEchoServer(t)
+	defer closeEcho()
+
+	remote, closeRelay := startTestRelay(t)
+	defer closeRelay()
+	targetConfig, edgeConfig := testClientConfigs(remote, echoAddress)
+	targetConfig.Tunnel.Pool = 2
+	targetConfig.Tunnel.Name = "shared-target"
+	edgeConfig.Tunnel.Name = "shared-edge"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errors := make(chan error, 4)
+	ready := make(chan string, 2)
+	reporter := telemetry.ReporterFunc(func(event telemetry.Event) {
+		if event.Type == "edge_listening" {
+			select {
+			case ready <- event.Listen:
+			default:
+			}
+		}
+	})
+	go func() { errors <- Run(ctx, targetConfig, nil) }()
+	for range 2 {
+		go func() { errors <- Run(ctx, edgeConfig, reporter) }()
+	}
+
+	edgeAddresses := make([]string, 0, 2)
+	for len(edgeAddresses) < 2 {
+		select {
+		case address := <-ready:
+			edgeAddresses = append(edgeAddresses, address)
+		case err := <-errors:
+			t.Fatalf("client stopped before both routes were ready: %v", err)
+		case <-time.After(8 * time.Second):
+			t.Fatal("timed out waiting for two Edge listeners")
+		}
+	}
+	if edgeAddresses[0] == edgeAddresses[1] {
+		t.Fatalf("two Edge sessions reported the same listener %q", edgeAddresses[0])
+	}
+
+	resultErrors := make(chan error, 2)
+	var workers sync.WaitGroup
+	for index, address := range edgeAddresses {
+		workers.Add(1)
+		go func(index int, address string) {
+			defer workers.Done()
+			payload := bytes.Repeat([]byte(fmt.Sprintf("route-%d/", index)), 4096)
+			conn, err := net.DialTimeout("tcp", address, 3*time.Second)
+			if err != nil {
+				resultErrors <- err
+				return
+			}
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
+			if _, err := conn.Write(payload); err != nil {
+				resultErrors <- err
+				return
+			}
+			received := make([]byte, len(payload))
+			if _, err := io.ReadFull(conn, received); err != nil {
+				resultErrors <- err
+				return
+			}
+			if !bytes.Equal(received, payload) {
+				resultErrors <- fmt.Errorf("route %d payload crossed or changed", index)
+			}
+		}(index, address)
+	}
+	workers.Wait()
+	close(resultErrors)
+	for err := range resultErrors {
+		t.Error(err)
+	}
+
+	cancel()
+	for range 3 {
+		select {
+		case err := <-errors:
+			if err != nil {
+				t.Errorf("client shutdown: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("multi-client shutdown exceeded its bound")
+		}
+	}
+}
+
 func TestEdgeReconnectsAfterTargetRestart(t *testing.T) {
 	echoAddress, closeEcho := startEchoServer(t)
 	defer closeEcho()

@@ -37,3 +37,15 @@ func TestLoadWebPasswordRequiresCredential(t *testing.T) {
 		t.Fatal("expected missing password error")
 	}
 }
+
+func TestLoadOrSetupWebPasswordAllowsFirstRun(t *testing.T) {
+	t.Setenv(webPasswordEnvironment, "")
+	path := filepath.Join(t.TempDir(), "web-password")
+	password, setupPath, err := loadOrSetupWebPassword(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if password != "" || setupPath != path {
+		t.Fatalf("password=%q setupPath=%q, want pending setup at %q", password, setupPath, path)
+	}
+}

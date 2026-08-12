@@ -392,6 +392,91 @@ func TestWaitingParticipantDisconnectReleasesRoleImmediately(t *testing.T) {
 	}
 }
 
+func TestRelayPairsMultipleParticipantsFIFOAndAllowsDuplicateNames(t *testing.T) {
+	events := make(chan telemetry.Event, 32)
+	server := New(Options{
+		PairTimeout: 5 * time.Second,
+		Reporter: telemetry.ReporterFunc(func(event telemetry.Event) {
+			events <- event
+		}),
+	})
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(func() {
+		_ = server.Close()
+		httpServer.Close()
+	})
+	url := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/session"
+	secret := []byte("multi-client-fifo-regression-secret")
+
+	edgeOne, edgeOneHello := dialNamedRelayParticipantWithHello(t, url, secret, "shared-route", protocol.RoleEdge, "shared-edge")
+	defer edgeOne.Close()
+	edgeTwo, edgeTwoHello := dialNamedRelayParticipantWithHello(t, url, secret, "shared-route", protocol.RoleEdge, "shared-edge")
+	defer edgeTwo.Close()
+	targetOne, targetOneHello := dialRelayParticipantWithHello(t, url, secret, "shared-route", protocol.RoleTarget)
+	defer targetOne.Close()
+	targetTwo, targetTwoHello := dialRelayParticipantWithHello(t, url, secret, "shared-route", protocol.RoleTarget)
+	defer targetTwo.Close()
+
+	assertRelayedHello(t, edgeOne, targetOneHello.Packet[:])
+	assertRelayedHello(t, edgeTwo, targetTwoHello.Packet[:])
+	assertRelayedHello(t, targetOne, edgeOneHello.Packet[:])
+	assertRelayedHello(t, targetTwo, edgeTwoHello.Packet[:])
+
+	if edgeOneHello.Packet == edgeTwoHello.Packet || targetOneHello.Packet == targetTwoHello.Packet {
+		t.Fatal("independent participants unexpectedly reused hello packets")
+	}
+	if got := server.registry.waitingCount(); got != 0 {
+		t.Fatalf("waiting participants after FIFO pairing = %d, want 0", got)
+	}
+
+	edgeIDs := make(map[string]bool)
+	for len(edgeIDs) < 2 {
+		event := waitForRelayEvent(t, events, "relay_peer_connected")
+		if event.PeerChange == nil || len(event.PeerChange.Peers) != 1 {
+			continue
+		}
+		peer := event.PeerChange.Peers[0]
+		if peer.Role == "edge" {
+			if peer.Name != "shared-edge" {
+				t.Fatalf("duplicate Edge name = %q, want shared-edge", peer.Name)
+			}
+			edgeIDs[peer.ID] = true
+		}
+	}
+	if len(edgeIDs) != 2 {
+		t.Fatalf("same-name Edges have %d distinct IDs, want 2", len(edgeIDs))
+	}
+}
+
+func TestRelayQueuesAdditionalEdgeUntilTargetArrives(t *testing.T) {
+	server := New(Options{PairTimeout: 5 * time.Second})
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(func() {
+		_ = server.Close()
+		httpServer.Close()
+	})
+	url := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/session"
+	secret := []byte("multi-client-waiting-regression-secret")
+
+	edgeOne, edgeOneHello := dialRelayParticipantWithHello(t, url, secret, "shared-route", protocol.RoleEdge)
+	defer edgeOne.Close()
+	edgeTwo, edgeTwoHello := dialRelayParticipantWithHello(t, url, secret, "shared-route", protocol.RoleEdge)
+	defer edgeTwo.Close()
+	targetOne, targetOneHello := dialRelayParticipantWithHello(t, url, secret, "shared-route", protocol.RoleTarget)
+	defer targetOne.Close()
+
+	assertRelayedHello(t, edgeOne, targetOneHello.Packet[:])
+	assertRelayedHello(t, targetOne, edgeOneHello.Packet[:])
+	if got := server.registry.waitingCount(); got != 1 {
+		t.Fatalf("waiting participants = %d, want second Edge only", got)
+	}
+
+	targetTwo, targetTwoHello := dialRelayParticipantWithHello(t, url, secret, "shared-route", protocol.RoleTarget)
+	defer targetTwo.Close()
+	assertRelayedHello(t, edgeTwo, targetTwoHello.Packet[:])
+	assertRelayedHello(t, targetTwo, edgeTwoHello.Packet[:])
+}
+
 func TestConcurrentWaitingConnectionChurnLeavesNoRegistryEntries(t *testing.T) {
 	server := New(Options{PairTimeout: 5 * time.Second})
 	httpServer := httptest.NewServer(server.Handler())
@@ -457,6 +542,15 @@ func TestConcurrentWaitingConnectionChurnLeavesNoRegistryEntries(t *testing.T) {
 }
 
 func dialRelayParticipant(t *testing.T, url string, secret []byte, channel string, role protocol.Role) *websocket.Conn {
+	conn, _ := dialRelayParticipantWithHello(t, url, secret, channel, role)
+	return conn
+}
+
+func dialRelayParticipantWithHello(t *testing.T, url string, secret []byte, channel string, role protocol.Role) (*websocket.Conn, *protocol.Hello) {
+	return dialNamedRelayParticipantWithHello(t, url, secret, channel, role, "")
+}
+
+func dialNamedRelayParticipantWithHello(t *testing.T, url string, secret []byte, channel string, role protocol.Role, name string) (*websocket.Conn, *protocol.Hello) {
 	t.Helper()
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
@@ -467,20 +561,37 @@ func dialRelayParticipant(t *testing.T, url string, secret []byte, channel strin
 		conn.Close()
 		t.Fatal(err)
 	}
+	if name != "" {
+		writeRelayMetadata(t, conn, hello, protocol.RelayMetadata{Name: name})
+	}
 	if err := conn.WriteMessage(websocket.BinaryMessage, hello.Packet[:]); err != nil {
 		conn.Close()
 		t.Fatal(err)
 	}
-	return conn
+	return conn, hello
+}
+
+func assertRelayedHello(t *testing.T, conn *websocket.Conn, want []byte) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	kind, packet, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read paired hello: %v", err)
+	}
+	if kind != websocket.BinaryMessage {
+		t.Fatalf("paired hello frame type = %d, want binary", kind)
+	}
+	if string(packet) != string(want) {
+		t.Fatalf("paired hello does not match FIFO peer")
+	}
+	_ = conn.SetReadDeadline(time.Time{})
 }
 
 func waitForRegistrySize(t *testing.T, registry *registry, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		registry.mu.Lock()
-		got := len(registry.waiting)
-		registry.mu.Unlock()
+		got := registry.waitingCount()
 		if got == want {
 			return
 		}

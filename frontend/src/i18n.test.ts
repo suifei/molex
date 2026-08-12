@@ -34,4 +34,17 @@ describe("runtime message localization", () => {
       "目标端 2001:db8::20 已断开连接",
     );
   });
+
+  it("localizes Target session pool progress and nested retry guidance", () => {
+    expect(localizeRuntimeMessage("Connecting Target session pool (4 sessions)", "zh-CN")).toBe(
+      "正在连接目标会话池（4 条会话）",
+    );
+    expect(localizeRuntimeMessage("Target session pool is ready: 3 of 4 sessions connected", "zh-CN")).toBe(
+      "目标会话池已就绪：3/4 条会话已连接",
+    );
+    expect(localizeRuntimeMessage(
+      "Target session pool is degraded: 2 of 4 sessions connected. Route unavailable; retrying in 1s. The relay or peer closed the encrypted route. Retry the local connection after the route is ready.",
+      "zh-CN",
+    )).toContain("目标会话池运行降级：2/4 条会话已连接。路由不可用；将在 1 秒后重试");
+  });
 });

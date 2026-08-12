@@ -63,7 +63,7 @@ The Relay pairs peers and forwards opaque binary frames. It never receives the e
 
 | Design choice | Operational result |
 | --- | --- |
-| **One public entrypoint** | Many concurrent TCP streams share one yamux session over WSS; no per-service public port is required. |
+| **One public entrypoint** | Concurrent TCP streams share WSS through yamux, and one channel may hold multiple Edge/Target sessions without a public port per service. |
 | **Ciphertext-only Relay** | Edge and Target use X25519, HKDF-SHA256, and AES-256-GCM inside TLS; Relay forwards authenticated ciphertext. |
 | **One binary, three roles** | The same cross-platform Go binary runs as Relay, Edge, or Target with a small JSON configuration. |
 | **Browser-managed everywhere** | Relay and both client roles use the same authenticated English/Simplified Chinese Web console; CLI operation remains available. |
@@ -86,7 +86,7 @@ flowchart LR
     Target <-->|"TCP"| Service["Private service"]
 ```
 
-Both clients dial outward. After Relay pairs matching Edge and Target roles, application data moves full duplex through this stack:
+Both clients dial outward. Relay keeps per-route FIFO Edge/Target queues and pairs each Edge with the oldest waiting Target as an independent encrypted session. Node names are reusable display labels; peer IDs distinguish connections. After pairing, application data moves full duplex through this stack:
 
 ```text
 TCP stream -> yamux stream -> AES-256-GCM record -> WebSocket binary frame -> TLS 1.3
@@ -120,7 +120,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-go build -trimpath -ldflags "-s -w -X main.version=0.1.0" -o bin/molex .
+go build -trimpath -ldflags "-s -w -X main.version=0.2.0" -o bin/molex .
 ```
 
 The frontend build must run before the Go build so the current Web assets are embedded in the binary.
@@ -198,6 +198,7 @@ The Web console controls the selected runtime in-process; it does not spawn anot
 | `listen` | Relay and Edge | Relay HTTP listener or local Edge TCP listener. |
 | `remote` | Clients | Relay `wss://` endpoint. Plain `ws://` is restricted to loopback. |
 | `tunnel` | Clients | `local` is the Target service, `remote` is the shared channel, and optional `name` labels the node. The OS hostname is used when `name` is empty. |
+| `tunnel.pool` | Target clients | Optional number of independent WSS sessions, from 1 to 64 (default 1). A value above 1 lets one Target process serve multiple Edge clients; every slot keeps separate encryption state. |
 
 Unknown JSON fields are rejected. Client secrets must contain at least 16 characters; `molex config init` generates 32 random bytes encoded as URL-safe Base64.
 
@@ -227,7 +228,7 @@ Runtime messages identify the likely next action for Relay-token, `/ws/session`,
 
 Each route admits at most 256 active yamux streams. Excess connections fail closed with guidance. Shutdown closes the listener and encrypted session before waiting for admitted workers, preventing abandoned socket goroutines.
 
-Relay keeps one reader per WebSocket from registration through forwarding. A waiting-client disconnect immediately releases its role slot. Frame writes have a 30-second deadline, and competing timeout, disconnect, bridge, and shutdown paths converge on one idempotent close operation.
+Relay keeps one reader per WebSocket from registration through forwarding. A waiting-client disconnect immediately removes it from the FIFO queue. Frame writes have a 30-second deadline, and competing timeout, disconnect, bridge, and shutdown paths converge on one idempotent close operation.
 
 ## Security and protocol
 

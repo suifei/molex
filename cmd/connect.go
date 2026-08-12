@@ -14,6 +14,7 @@ import (
 
 func newConnectCommand() *cobra.Command {
 	var configPath, remote, secret, token, role, listen, local, channel, name string
+	var pool int
 	command := &cobra.Command{
 		Use:   "connect",
 		Short: "Connect an edge or target to the relay",
@@ -34,6 +35,9 @@ func newConnectCommand() *cobra.Command {
 			applyStringFlag(cmd, "local", &cfg.Tunnel.Local, local)
 			applyStringFlag(cmd, "channel", &cfg.Tunnel.Remote, channel)
 			applyStringFlag(cmd, "name", &cfg.Tunnel.Name, name)
+			if cmd.Flags().Changed("pool") {
+				cfg.Tunnel.Pool = pool
+			}
 			cfg = cfg.Normalized()
 			if err := cfg.Validate(); err != nil {
 				return err
@@ -58,6 +62,7 @@ func newConnectCommand() *cobra.Command {
 	command.Flags().StringVar(&local, "local", "", "target service address")
 	command.Flags().StringVar(&channel, "channel", "", "shared rendezvous channel")
 	command.Flags().StringVar(&name, "name", "", "client name shown in the Relay console")
+	command.Flags().IntVar(&pool, "pool", 0, "target session pool size (1-64)")
 	command.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return fmt.Errorf("connect flags: %w", err) })
 	return command
 }

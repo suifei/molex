@@ -25,6 +25,8 @@ const (
 	RoleTarget = "target"
 
 	DefaultWebSocketPath = "/ws/session"
+	DefaultTargetPool    = 1
+	MaxTargetPool        = 64
 )
 
 // Config deliberately keeps no more than seven top-level fields.
@@ -39,9 +41,19 @@ type Config struct {
 }
 
 type TunnelConfig struct {
-	Local  string `json:"local,omitempty"`
-	Remote string `json:"remote,omitempty"`
+	Local  string       `json:"local,omitempty"`
+	Remote string       `json:"remote,omitempty"`
+	Name   string       `json:"name,omitempty"`
+	Pool   int          `json:"pool,omitempty"`
+	Rules  []TunnelRule `json:"rules,omitempty"`
+}
+
+type TunnelRule struct {
 	Name   string `json:"name,omitempty"`
+	Listen string `json:"listen,omitempty"`
+	Local  string `json:"local,omitempty"`
+	Remote string `json:"remote"`
+	Pool   int    `json:"pool,omitempty"`
 }
 
 func Default() Config {
@@ -134,6 +146,16 @@ func (c Config) Normalized() Config {
 	c.Tunnel.Local = strings.TrimSpace(c.Tunnel.Local)
 	c.Tunnel.Remote = strings.TrimSpace(c.Tunnel.Remote)
 	c.Tunnel.Name = strings.TrimSpace(c.Tunnel.Name)
+	for index := range c.Tunnel.Rules {
+		rule := &c.Tunnel.Rules[index]
+		rule.Name = strings.TrimSpace(rule.Name)
+		rule.Listen = strings.TrimSpace(rule.Listen)
+		rule.Local = strings.TrimSpace(rule.Local)
+		rule.Remote = strings.TrimSpace(rule.Remote)
+		if c.Role == RoleTarget && rule.Pool == 0 {
+			rule.Pool = DefaultTargetPool
+		}
+	}
 
 	if c.Mode == "" {
 		c.Mode = ModePunch
@@ -143,6 +165,9 @@ func (c Config) Normalized() Config {
 	}
 	if c.Mode == ModePunch && c.Role == RoleEdge && c.Listen == "" {
 		c.Listen = "127.0.0.1:2222"
+	}
+	if c.Mode == ModePunch && c.Role == RoleTarget && c.Tunnel.Pool == 0 {
+		c.Tunnel.Pool = DefaultTargetPool
 	}
 	if c.Remote != "" {
 		if normalized, err := NormalizeRemote(c.Remote); err == nil {
@@ -173,22 +198,19 @@ func (c Config) Validate() error {
 		} else if err := validateRemoteSecurity(c.Remote); err != nil {
 			problems = append(problems, "remote: "+err.Error())
 		}
-		if c.Tunnel.Remote == "" {
-			problems = append(problems, "tunnel.remote channel is required")
-		} else if len(c.Tunnel.Remote) > 128 {
-			problems = append(problems, "tunnel.remote channel must be at most 128 characters")
-		}
-		if err := validateNodeName(c.Tunnel.Name); err != nil {
-			problems = append(problems, "tunnel.name: "+err.Error())
-		}
-		if c.Role == RoleEdge {
-			if err := validateAddress(c.Listen); err != nil {
-				problems = append(problems, "listen: "+err.Error())
-			}
-		}
-		if c.Role == RoleTarget {
-			if err := validateAddress(c.Tunnel.Local); err != nil {
-				problems = append(problems, "tunnel.local: "+err.Error())
+		if len(c.Tunnel.Rules) == 0 {
+			problems = append(problems, validateTunnelRoute(c.Role, c.Listen, c.Tunnel.Local, c.Tunnel.Remote, c.Tunnel.Name, c.Tunnel.Pool, "tunnel")...)
+		} else {
+			seenEdgeListeners := make(map[string]bool)
+			for index, rule := range c.Tunnel.Rules {
+				prefix := fmt.Sprintf("tunnel.rules[%d]", index)
+				problems = append(problems, validateTunnelRoute(c.Role, rule.Listen, rule.Local, rule.Remote, rule.Name, rule.Pool, prefix)...)
+				if c.Role == RoleEdge && rule.Listen != "" {
+					if seenEdgeListeners[rule.Listen] {
+						problems = append(problems, prefix+".listen: duplicate Edge listen address")
+					}
+					seenEdgeListeners[rule.Listen] = true
+				}
 			}
 		}
 	default:
@@ -202,6 +224,50 @@ func (c Config) Validate() error {
 		return errors.New(strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+func validateTunnelRoute(role, listen, local, remote, name string, pool int, prefix string) []string {
+	var problems []string
+	if remote == "" {
+		problems = append(problems, prefix+".remote channel is required")
+	} else if len(remote) > 128 {
+		problems = append(problems, prefix+".remote channel must be at most 128 characters")
+	}
+	if err := validateNodeName(name); err != nil {
+		problems = append(problems, prefix+".name: "+err.Error())
+	}
+	if role == RoleEdge {
+		if err := validateAddress(listen); err != nil {
+			problems = append(problems, prefix+".listen: "+err.Error())
+		}
+	}
+	if role == RoleTarget {
+		if err := validateAddress(local); err != nil {
+			problems = append(problems, prefix+".local: "+err.Error())
+		}
+		if pool < 1 || pool > MaxTargetPool {
+			problems = append(problems, fmt.Sprintf("%s.pool must be between 1 and %d", prefix, MaxTargetPool))
+		}
+	}
+	return problems
+}
+
+func (c Config) ClientRoutes() []Config {
+	c = c.Normalized()
+	if c.Mode != ModePunch || len(c.Tunnel.Rules) == 0 {
+		c.Tunnel.Rules = nil
+		return []Config{c}
+	}
+	routes := make([]Config, 0, len(c.Tunnel.Rules))
+	for _, rule := range c.Tunnel.Rules {
+		route := c
+		route.Tunnel = TunnelConfig{Local: rule.Local, Remote: rule.Remote, Name: rule.Name, Pool: rule.Pool}
+		if c.Role == RoleEdge {
+			route.Listen = rule.Listen
+		}
+		routes = append(routes, route)
+	}
+	return routes
 }
 
 func NormalizeRemote(raw string) (string, error) {

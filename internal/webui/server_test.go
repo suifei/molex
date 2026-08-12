@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +92,40 @@ func TestRuntimeLifecycle(t *testing.T) {
 	waitForState(t, client, httpServer.URL, "idle")
 }
 
+func TestConfigCRUDPreservesMultipleSameNameRules(t *testing.T) {
+	server := newTestServer(t)
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := newTestClient(t)
+	csrf := login(t, client, httpServer.URL)
+
+	cfg := config.Config{
+		Mode:   config.ModePunch,
+		Role:   config.RoleEdge,
+		Secret: "0123456789abcdef0123456789abcdef",
+		Token:  "relay-token-for-webui-test",
+		Remote: "wss://relay.example/ws/session",
+		Tunnel: config.TunnelConfig{Rules: []config.TunnelRule{
+			{Name: "shared-edge", Listen: "127.0.0.1:2201", Remote: "ssh"},
+			{Name: "shared-edge", Listen: "127.0.0.1:2202", Remote: "rdp"},
+		}},
+	}
+	response := doAuthorizedRequest(t, client, http.MethodPut, httpServer.URL+"/api/config", httpServer.URL, csrf, cfg)
+	assertStatus(t, response, http.StatusNoContent)
+	response.Body.Close()
+
+	response = doRequest(t, client, http.MethodGet, httpServer.URL+"/api/config", "", nil)
+	assertStatus(t, response, http.StatusOK)
+	var saved config.Config
+	decodeResponse(t, response, &saved)
+	if len(saved.Tunnel.Rules) != 2 {
+		t.Fatalf("saved rule count = %d, want 2", len(saved.Tunnel.Rules))
+	}
+	if saved.Tunnel.Rules[0].Name != saved.Tunnel.Rules[1].Name {
+		t.Fatalf("same-name rules were changed: %#v", saved.Tunnel.Rules)
+	}
+}
+
 func TestLoginRateLimit(t *testing.T) {
 	server := newTestServer(t)
 	httpServer := httptest.NewServer(server.Handler())
@@ -140,6 +176,56 @@ func TestWebServerRejectsUnsafeOptions(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "12 characters") {
 		t.Fatalf("expected short password rejection, got %v", err)
 	}
+}
+
+func TestFirstRunSetupCreatesPrivatePasswordAndSession(t *testing.T) {
+	directory := t.TempDir()
+	passwordPath := filepath.Join(directory, "credentials", "web-password")
+	server, err := New(Options{
+		Listen:            "127.0.0.1:0",
+		ConfigPath:        filepath.Join(directory, "molex.json"),
+		SetupPasswordPath: passwordPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := newTestClient(t)
+
+	response := doRequest(t, client, http.MethodGet, httpServer.URL+"/api/session", "", nil)
+	assertStatus(t, response, http.StatusOK)
+	var initial sessionResponse
+	decodeResponse(t, response, &initial)
+	if !initial.SetupRequired || initial.Authenticated {
+		t.Fatalf("initial session = %#v, want setup required", initial)
+	}
+
+	response = doRequest(t, client, http.MethodPost, httpServer.URL+"/api/setup", httpServer.URL, setupRequest{Password: "short"})
+	assertStatus(t, response, http.StatusBadRequest)
+	response.Body.Close()
+
+	response = doRequest(t, client, http.MethodPost, httpServer.URL+"/api/setup", httpServer.URL, setupRequest{Password: testPassword})
+	assertStatus(t, response, http.StatusOK)
+	var setup sessionResponse
+	decodeResponse(t, response, &setup)
+	if !setup.Authenticated || setup.CSRFToken == "" {
+		t.Fatalf("setup session = %#v", setup)
+	}
+	data, err := os.ReadFile(passwordPath)
+	if err != nil || strings.TrimSpace(string(data)) != testPassword {
+		t.Fatalf("saved password = %q, %v", data, err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(passwordPath)
+		if err != nil || info.Mode().Perm()&0o077 != 0 {
+			t.Fatalf("password permissions = %v, %v", info, err)
+		}
+	}
+
+	response = doRequest(t, client, http.MethodPost, httpServer.URL+"/api/setup", httpServer.URL, setupRequest{Password: "another-secure-password"})
+	assertStatus(t, response, http.StatusConflict)
+	response.Body.Close()
 }
 
 func TestSessionCookieUsesConfiguredClockAndTTL(t *testing.T) {

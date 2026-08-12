@@ -89,7 +89,7 @@ func TestClientErrorGuidance(t *testing.T) {
 		{"tls", errors.New("tls: failed to verify certificate: x509: certificate signed by unknown authority"), "system time"},
 		{"timeout", context.DeadlineExceeded, "network reachability"},
 		{"pair", errors.New("receive peer hello: websocket: close 1013: pair timeout"), "Start the other client"},
-		{"duplicate", errors.New("websocket: close 1008: session unavailable"), "duplicate client"},
+		{"session unavailable", errors.New("websocket: close 1008: session unavailable"), "relay route"},
 		{"handshake", errors.New("peer authentication failed"), "same channel and secret"},
 		{"listener", &localListenError{address: "127.0.0.1:2222", err: syscall.EADDRINUSE}, "Stop the process using that address"},
 		{"closed", errSessionClosed, "Retry the local connection"},

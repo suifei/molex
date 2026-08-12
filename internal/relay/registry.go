@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -9,8 +8,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/suifei/molex/internal/protocol"
 )
-
-var errDuplicateRole = errors.New("a participant with this role is already waiting")
 
 type participant struct {
 	id          string
@@ -39,54 +36,61 @@ type participant struct {
 	metricVersion  atomic.Uint64
 }
 
-type waitingPair struct {
-	edge   *participant
-	target *participant
+// waitingQueue contains unpaired participants for one opaque route key.
+// Keeping each role in arrival order makes multi-client rendezvous
+// deterministic while preserving one independent encrypted session per pair.
+type waitingQueue struct {
+	edges   []*participant
+	targets []*participant
 }
 
 type registry struct {
 	mu      sync.Mutex
-	waiting map[[32]byte]*waitingPair
+	waiting map[[32]byte]*waitingQueue
 }
 
 func newRegistry() *registry {
-	return &registry{waiting: make(map[[32]byte]*waitingPair)}
+	return &registry{waiting: make(map[[32]byte]*waitingQueue)}
 }
 
-// join elects only the participant completing the pair to start the bridge.
+// join elects only the participant completing a pair to start the bridge.
+// Participants of the same role are queued instead of rejected. The route
+// key remains opaque, and every pair still performs its own hello/key
+// exchange, so sessions cannot share payload keys or yamux state.
 func (r *registry) join(p *participant) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	pair := r.waiting[p.route]
-	if pair == nil {
-		pair = &waitingPair{}
-		r.waiting[p.route] = pair
+	queue := r.waiting[p.route]
+	if queue == nil {
+		queue = &waitingQueue{}
+		r.waiting[p.route] = queue
 	}
-	if pair.edge != nil && pair.edge.closed() {
-		pair.edge = nil
-	}
-	if pair.target != nil && pair.target.closed() {
-		pair.target = nil
-	}
+	queue.edges = activeParticipants(queue.edges)
+	queue.targets = activeParticipants(queue.targets)
+
+	var peer *participant
 	if p.role == protocol.RoleEdge {
-		if pair.edge != nil {
-			return errDuplicateRole
+		peer, queue.targets = popParticipant(queue.targets)
+		if peer == nil {
+			queue.edges = append(queue.edges, p)
 		}
-		pair.edge = p
 	} else {
-		if pair.target != nil {
-			return errDuplicateRole
+		peer, queue.edges = popParticipant(queue.edges)
+		if peer == nil {
+			queue.targets = append(queue.targets, p)
 		}
-		pair.target = p
 	}
-	if pair.edge != nil && pair.target != nil {
-		delete(r.waiting, p.route)
-		pair.edge.peer.Store(pair.target)
-		pair.target.peer.Store(pair.edge)
+
+	if peer != nil {
+		if len(queue.edges) == 0 && len(queue.targets) == 0 {
+			delete(r.waiting, p.route)
+		}
+		p.peer.Store(peer)
+		peer.peer.Store(p)
 		p.bridgeOwner = true
-		close(pair.edge.paired)
-		close(pair.target.paired)
+		close(p.paired)
+		close(peer.paired)
 	}
 	return nil
 }
@@ -122,21 +126,66 @@ func (p *participant) closed() bool {
 func (r *registry) remove(p *participant) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	pair := r.waiting[p.route]
-	if pair == nil {
+	queue := r.waiting[p.route]
+	if queue == nil {
 		return false
 	}
-	removed := false
-	if pair.edge == p {
-		pair.edge = nil
-		removed = true
-	}
-	if pair.target == p {
-		pair.target = nil
-		removed = true
-	}
-	if pair.edge == nil && pair.target == nil {
+	var removed bool
+	queue.edges, removed = removeParticipant(queue.edges, p)
+	var targetRemoved bool
+	queue.targets, targetRemoved = removeParticipant(queue.targets, p)
+	removed = removed || targetRemoved
+	if len(queue.edges) == 0 && len(queue.targets) == 0 {
 		delete(r.waiting, p.route)
 	}
 	return removed
+}
+
+func activeParticipants(participants []*participant) []*participant {
+	active := participants[:0]
+	for _, participant := range participants {
+		if participant != nil && !participant.closed() {
+			active = append(active, participant)
+		}
+	}
+	return active
+}
+
+func popParticipant(participants []*participant) (*participant, []*participant) {
+	for len(participants) > 0 {
+		participant := participants[0]
+		participants = participants[1:]
+		if participant != nil && !participant.closed() {
+			return participant, participants
+		}
+	}
+	return nil, nil
+}
+
+func removeParticipant(participants []*participant, wanted *participant) ([]*participant, bool) {
+	removed := false
+	kept := participants[:0]
+	for _, participant := range participants {
+		if participant == wanted {
+			removed = true
+			continue
+		}
+		kept = append(kept, participant)
+	}
+	return kept, removed
+}
+
+func (r *registry) waitingCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for route, queue := range r.waiting {
+		queue.edges = activeParticipants(queue.edges)
+		queue.targets = activeParticipants(queue.targets)
+		count += len(queue.edges) + len(queue.targets)
+		if len(queue.edges) == 0 && len(queue.targets) == 0 {
+			delete(r.waiting, route)
+		}
+	}
+	return count
 }

@@ -8,6 +8,8 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,10 +24,15 @@ type validationResult struct {
 
 type sessionResponse struct {
 	Authenticated bool   `json:"authenticated"`
+	SetupRequired bool   `json:"setupRequired,omitempty"`
 	CSRFToken     string `json:"csrfToken,omitempty"`
 }
 
 type loginRequest struct {
+	Password string `json:"password"`
+}
+
+type setupRequest struct {
 	Password string `json:"password"`
 }
 
@@ -40,9 +47,56 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 	session, ok := s.sessionFromRequest(r)
 	if !ok {
-		writeJSON(w, http.StatusOK, sessionResponse{Authenticated: false})
+		writeJSON(w, http.StatusOK, sessionResponse{Authenticated: false, SetupRequired: s.requiresSetup()})
 		return
 	}
+	writeJSON(w, http.StatusOK, sessionResponse{Authenticated: true, CSRFToken: session.csrf})
+}
+
+func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin request rejected")
+		return
+	}
+	var input setupRequest
+	if err := decodeJSON(r, &input, 4096); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(input.Password) < 12 {
+		writeError(w, http.StatusBadRequest, "web password must contain at least 12 characters")
+		return
+	}
+	if len(input.Password) > 1024 {
+		writeError(w, http.StatusBadRequest, "web password must contain at most 1024 characters")
+		return
+	}
+
+	s.authMu.Lock()
+	if !s.setupPending {
+		s.authMu.Unlock()
+		writeError(w, http.StatusConflict, "first-run setup is already complete")
+		return
+	}
+	if err := writePrivateFile(s.options.SetupPasswordPath, []byte(input.Password+"\n")); err != nil {
+		s.authMu.Unlock()
+		writeError(w, http.StatusInternalServerError, "could not save the management password")
+		return
+	}
+	s.passwordHash = hashToken(input.Password)
+	s.setupPending = false
+	s.authMu.Unlock()
+
+	token, session, err := s.sessions.create(s.options.SessionTTL)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create session")
+		return
+	}
+	setSessionCookie(w, r, token, session.expires, s.options.SessionTTL)
 	writeJSON(w, http.StatusOK, sessionResponse{Authenticated: true, CSRFToken: session.csrf})
 }
 
@@ -321,4 +375,32 @@ func writeError(w http.ResponseWriter, status int, message string) {
 func methodNotAllowed(w http.ResponseWriter, methods ...string) {
 	w.Header().Set("Allow", strings.Join(methods, ", "))
 	writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+}
+
+func writePrivateFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".molex-credential-*")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, path)
 }

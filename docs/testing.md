@@ -30,6 +30,7 @@ npm run build
 
 Additional recovery simulations use the same real sockets and protocol stack:
 
+- run one Target process with a two-slot session pool and two same-channel Edge processes, then verify both independent encrypted routes transfer concurrent payloads without cross-talk;
 - stop Target after a successful flow, observe Edge leave the listening state, restart Target, and verify a new Edge listener forwards traffic;
 - occupy the configured Edge address, confirm the retry event tells the operator how to release it, free the address, and verify Edge starts listening without a process restart.
 
@@ -49,7 +50,7 @@ go test -v ./internal/client -run 'TestEdge(Reconnects|Recovers)'
 The protocol suite verifies:
 
 - complementary peers derive opposite directional keys;
-- wrong secrets and duplicate roles fail;
+- wrong secrets and non-complementary roles fail; multiple same-role participants are queued and paired FIFO by the Relay;
 - hello packets contain no literal secret, channel, or product marker;
 - observed data frames do not contain a plaintext canary;
 - a one-bit ciphertext change fails AES-GCM authentication;
@@ -60,6 +61,7 @@ The protocol suite verifies:
 - paired telemetry includes names, forwarding endpoints, counterpart IDs, platforms, pseudonymous route IDs, and ciphertext traffic counters;
 - a late update-only statistics event cannot recreate a disconnected peer or pollute activity history;
 - a real Relay/Edge/Target session adds two paired peers and removes both after shutdown.
+- multiple same-route Edge/Target participants pair FIFO, same-name clients receive distinct peer IDs, and a one-process Target pool serves two Edges without sharing session keys or yamux state.
 
 ## Web console checks
 

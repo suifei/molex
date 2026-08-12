@@ -8,6 +8,7 @@
   "tunnel": {
     "local": "127.0.0.1:22",
     "remote": "home-ssh",
-    "name": "home-target"
+    "name": "home-target",
+    "pool": 1
   }
 }

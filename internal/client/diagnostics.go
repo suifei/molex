@@ -70,7 +70,7 @@ func guidanceForClientError(err error) string {
 		return "No matching peer joined before the pairing timeout. Start the other client and verify that Edge and Target use the same channel, secret, token, and complementary roles."
 	}
 	if strings.Contains(detail, "session unavailable") {
-		return "Another client with the same role is already waiting on this route. Stop the duplicate client and keep exactly one Edge and one Target."
+		return "The relay could not accept this session. Verify the relay route and admission token, then retry; clients with the same role may wait on the same channel."
 	}
 	if strings.Contains(detail, "peer authentication failed") ||
 		strings.Contains(detail, "session key confirmation failed") ||

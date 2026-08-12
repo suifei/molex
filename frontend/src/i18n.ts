@@ -16,6 +16,14 @@ export const copy = {
     signInDescription: "Enter the management password for this node.",
     password: "Management password",
     signIn: "Sign in",
+    firstRunSetup: "First-run setup",
+    createPassword: "Create your management password",
+    createPasswordDescription: "This password protects the Web console on this device. It is stored locally and is never sent to Relay.",
+    newPassword: "New password",
+    confirmPassword: "Confirm password",
+    passwordRequirement: "Use at least 12 characters.",
+    passwordMismatch: "The passwords do not match.",
+    finishSetup: "Finish setup",
     logout: "Sign out",
     themePreferences: {
       system: "System theme",
@@ -33,6 +41,12 @@ export const copy = {
     encryptedHub: "Encrypted hub",
     channel: "Channel",
     targetService: "Target service",
+    targetPool: "Target session pool",
+    forwardingRules: "Forwarding rules",
+    forwardingRulesDescription: "Run several independent Edge or Target routes from this one Web console.",
+    addRule: "Add rule",
+    deleteRule: "Delete rule",
+    singleRuleCompatibility: "The fields above are the active forwarding rule. Add rules to manage several routes together.",
     secured: "Secured",
     pairing: "Pairing",
     standby: "Standby",
@@ -45,6 +59,12 @@ export const copy = {
     client: "Client",
     listenAddress: "Listen address",
     admissionToken: "Admission token",
+    caddySetup: "Caddy setup",
+    caddySetupDescription: "Generate a production Caddyfile for the Relay data path and Web console.",
+    caddyOfficialGuide: "Official installation guide",
+    relayDomain: "Relay domain",
+    adminDomain: "Web console domain",
+    downloadCaddyfile: "Download Caddyfile",
     clientRole: "Client role",
 		nodeName: "Node name",
     edgeListener: "Edge listener",
@@ -122,6 +142,14 @@ export const copy = {
     signInDescription: "请输入此节点的管理密码。",
     password: "管理密码",
     signIn: "登录",
+    firstRunSetup: "首次运行设置",
+    createPassword: "创建管理密码",
+    createPasswordDescription: "此密码用于保护本机 Web 控制台，仅保存在本机，不会发送给 Relay。",
+    newPassword: "新密码",
+    confirmPassword: "确认密码",
+    passwordRequirement: "请使用至少 12 个字符。",
+    passwordMismatch: "两次输入的密码不一致。",
+    finishSetup: "完成设置",
     logout: "退出登录",
     themePreferences: {
       system: "跟随系统",
@@ -139,6 +167,12 @@ export const copy = {
     encryptedHub: "加密枢纽",
     channel: "通道",
     targetService: "目标服务",
+    targetPool: "目标会话池",
+    forwardingRules: "转发规则",
+    forwardingRulesDescription: "在同一个 Web 控制台中运行多条相互独立的 Edge 或 Target 路由。",
+    addRule: "新增规则",
+    deleteRule: "删除规则",
+    singleRuleCompatibility: "当前使用上方的单条转发配置；新增规则后可统一管理多条路由。",
     secured: "已加密",
     pairing: "配对中",
     standby: "待机",
@@ -151,6 +185,12 @@ export const copy = {
     client: "穿透",
     listenAddress: "监听地址",
     admissionToken: "接入令牌",
+    caddySetup: "Caddy 配置",
+    caddySetupDescription: "为 Relay 数据路径和 Web 控制台生成可直接使用的生产 Caddyfile。",
+    caddyOfficialGuide: "官方安装指南",
+    relayDomain: "中继域名",
+    adminDomain: "Web 控制台域名",
+    downloadCaddyfile: "下载 Caddyfile",
     clientRole: "客户端角色",
 		nodeName: "节点名称",
     edgeListener: "边缘监听端",
@@ -234,8 +274,10 @@ const zhValidationErrors: Record<string, string> = {
   "tunnel.remote channel is required": "通道不能为空",
   "tunnel.remote channel must be at most 128 characters": "通道最多允许 128 个字符",
 	"tunnel.name: must be at most 64 bytes": "节点名称最多允许 64 字节",
-	"tunnel.name: must not contain control characters": "节点名称不能包含控制字符",
-	"tunnel.name: must be valid UTF-8": "节点名称必须是有效文本",
+  "tunnel.name: must not contain control characters": "节点名称不能包含控制字符",
+  "tunnel.name: must be valid UTF-8": "节点名称必须是有效文本",
+  "tunnel.pool must be between 1 and 64": "目标会话池必须在 1 到 64 之间",
+  "web password must contain at least 12 characters": "管理密码至少需要 12 个字符",
   "tunnel.local: address is required": "目标服务地址不能为空",
   "tunnel.local: must use host:port form": "目标服务地址必须使用 host:port 格式",
   "tunnel.local: port must be between 0 and 65535": "目标服务端口必须在 0 到 65535 之间",
@@ -286,7 +328,6 @@ const zhClientGuidance: Record<string, string> = {
   "The relay WebSocket route was not found (HTTP 404). Check that the URL ends with /ws/session and Caddy forwards that path.": "未找到中继 WebSocket 路由（HTTP 404）。请确认 URL 以 /ws/session 结尾，并确认 Caddy 已转发该路径。",
   "The relay is limiting connection attempts (HTTP 429). Wait before retrying and check the relay logs.": "中继正在限制连接尝试（HTTP 429）。请稍后重试并检查中继日志。",
   "No matching peer joined before the pairing timeout. Start the other client and verify that Edge and Target use the same channel, secret, token, and complementary roles.": "配对超时前没有匹配的对端加入。请启动另一端，并确认 Edge 与 Target 使用相同的通道、密钥和令牌，且角色互补。",
-  "Another client with the same role is already waiting on this route. Stop the duplicate client and keep exactly one Edge and one Target.": "此路由已有同角色客户端正在等待。请停止重复客户端，并只保留一个 Edge 和一个 Target。",
   "The encrypted handshake failed. Verify that Edge and Target use the same channel and secret with complementary roles.": "加密握手失败。请确认 Edge 与 Target 使用相同的通道和密钥，且角色互补。",
   "The relay hostname could not be resolved. Check the hostname and this machine's DNS settings.": "无法解析中继主机名。请检查主机名和本机 DNS 设置。",
   "The relay connection was refused. Start Caddy or MoleX Relay, verify the configured port, and check the firewall.": "中继拒绝连接。请启动 Caddy 或 MoleX Relay，核对配置端口并检查防火墙。",
@@ -323,6 +364,15 @@ export function localizeValidationError(message: string, locale: Locale): string
 export function localizeRuntimeMessage(message: string, locale: Locale): string {
   if (locale === "en") return message;
   if (zhRuntimeMessages[message]) return zhRuntimeMessages[message];
+
+  const poolConnecting = message.match(/^Connecting Target session pool \((\d+) sessions\)$/);
+  if (poolConnecting) return `正在连接目标会话池（${poolConnecting[1]} 条会话）`;
+
+  const poolReady = message.match(/^Target session pool is ready: (\d+) of (\d+) sessions connected$/);
+  if (poolReady) return `目标会话池已就绪：${poolReady[1]}/${poolReady[2]} 条会话已连接`;
+
+  const poolDegraded = message.match(/^Target session pool is degraded: (\d+) of (\d+) sessions connected\. (.+)$/);
+  if (poolDegraded) return `目标会话池运行降级：${poolDegraded[1]}/${poolDegraded[2]} 条会话已连接。${localizeRuntimeMessage(poolDegraded[3], locale)}`;
 
   const guidedRetry = message.match(/^Route unavailable; retrying in (.+?)\. (.+)$/);
   if (guidedRetry) return `路由不可用；将在 ${localizeDuration(guidedRetry[1])}后重试。${localizeClientGuidance(guidedRetry[2])}`;

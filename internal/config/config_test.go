@@ -124,3 +124,52 @@ func TestNodeNameValidation(t *testing.T) {
 		t.Fatalf("control character in node name accepted: %v", err)
 	}
 }
+
+func TestTargetPoolDefaultsAndBounds(t *testing.T) {
+	cfg := Default()
+	cfg.Role = RoleTarget
+	cfg.Secret = strings.Repeat("s", 32)
+	cfg.Tunnel.Local = "127.0.0.1:22"
+	cfg = cfg.Normalized()
+	if cfg.Tunnel.Pool != DefaultTargetPool {
+		t.Fatalf("target pool default = %d, want %d", cfg.Tunnel.Pool, DefaultTargetPool)
+	}
+	cfg.Tunnel.Pool = MaxTargetPool
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("maximum target pool rejected: %v", err)
+	}
+	cfg.Tunnel.Pool = MaxTargetPool + 1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "tunnel.pool") {
+		t.Fatalf("oversized target pool accepted: %v", err)
+	}
+	cfg.Tunnel.Pool = 0
+	cfg = cfg.Normalized()
+	if cfg.Tunnel.Pool != DefaultTargetPool {
+		t.Fatalf("normalized target pool = %d, want %d", cfg.Tunnel.Pool, DefaultTargetPool)
+	}
+}
+
+func TestMultipleTunnelRulesNormalizeValidateAndExpand(t *testing.T) {
+	cfg := Default()
+	cfg.Secret = strings.Repeat("s", 32)
+	cfg.Tunnel.Rules = []TunnelRule{
+		{Name: " first ", Listen: " 127.0.0.1:2201 ", Remote: " route-one "},
+		{Name: "second", Listen: "127.0.0.1:2202", Remote: "route-two"},
+	}
+	cfg = cfg.Normalized()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid multi-rule Edge config rejected: %v", err)
+	}
+	routes := cfg.ClientRoutes()
+	if len(routes) != 2 || routes[0].Listen != "127.0.0.1:2201" || routes[1].Tunnel.Remote != "route-two" {
+		t.Fatalf("expanded routes = %#v", routes)
+	}
+	if len(routes[0].Tunnel.Rules) != 0 {
+		t.Fatal("expanded route retained nested rules")
+	}
+
+	cfg.Tunnel.Rules[1].Listen = cfg.Tunnel.Rules[0].Listen
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate Edge listen") {
+		t.Fatalf("duplicate Edge listen accepted: %v", err)
+	}
+}

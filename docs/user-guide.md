@@ -78,7 +78,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-go build -trimpath -ldflags "-s -w -X main.version=0.1.0" -o bin/molex .
+go build -trimpath -ldflags "-s -w -X main.version=0.2.0" -o bin/molex .
 ```
 
 Use `bin/molex.exe` on Windows. Release-package users need only the single binary for their platform.
@@ -194,7 +194,7 @@ Copy the secret generated for Edge; do not generate a second one:
 }
 ```
 
-Edge and Target must match on `secret`, `token`, `remote`, and `tunnel.remote`, and their roles must be complementary. Only Target uses `tunnel.local`; only Edge uses `listen`.
+Edge and Target must match on `secret`, `token`, `remote`, and `tunnel.remote`, and their roles must be complementary. Only Target uses `tunnel.local`; only Edge uses `listen`. Multiple Edge/Target processes may share one channel; the Relay pairs each Edge with the oldest waiting Target as an independent session. `tunnel.name` is a WebUI label and does not need to be unique.
 
 ### 4.5 Validate and start
 
@@ -244,7 +244,8 @@ Then open `http://127.0.0.1:9090` locally. Use a separate HTTPS reverse-proxy ho
 
 | Field | Meaning |
 | --- | --- |
-| Node name | `tunnel.name`, used to identify the machine |
+| Node name | `tunnel.name`, a display label that may be shared by multiple clients; peer ID distinguishes connections |
+| Target session pool | `tunnel.pool`, independent outbound sessions for one Target process, 1–64 (default 1) |
 | Source IP | Direct socket address or trusted loopback-proxy client IP |
 | Role/status | Edge or Target; waiting or paired |
 | Forward endpoint | Edge local listener or Target service |
@@ -378,7 +379,9 @@ Database clients connect directly to the local Edge port. The database still own
 
 ### 6.6 Multiple services
 
-One MoleX client process manages one Edge/Target route. Run one configuration and process per service:
+One MoleX client process manages one Edge/Target WebSocket route. You may run multiple Edge or Target processes with the same `secret` and `tunnel.remote`; the Relay keeps per-route FIFO queues and pairs each Edge with the oldest waiting Target. Every pair remains an independent encrypted session. Run one configuration and process per service:
+
+A Target process can optionally open an independent session pool with `tunnel.pool` from 1 to 64 (default 1). Set it to 2 or more when one Target host should serve multiple Edge clients; every pool slot has separate WSS, key, and yamux state.
 
 ```text
 ssh:      channel=home-ssh      edge=127.0.0.1:2222
@@ -464,7 +467,7 @@ Command-line values may appear in shell history and process listings. Prefer a p
 | Connection refused | Check Caddy/Relay service state, port, and firewall |
 | TLS verification failed | Check certificate hostname, chain, and system time |
 | Pairing timeout | Start the peer; match channel, secret, token, and complementary roles |
-| Duplicate role | Keep exactly one Edge and one Target on a route |
+| Same-role client waiting | Multiple Edge/Target clients are supported on one channel; wait for a complementary peer and let the Relay pair sessions FIFO |
 | Edge address in use | Stop the occupying process or change `listen` |
 | Target service unavailable | Start the target service and check `tunnel.local` and network access |
 | Not listening | Wait for the secure route; this is expected protection during an outage |

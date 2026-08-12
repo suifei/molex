@@ -12,14 +12,15 @@ MoleX 是一个 Go 编写的单二进制安全 TCP 传输枢纽。Edge 和 Targe
 
 主要特性：
 
-- 一个公网 WSS 入口承载任意数量的独立路由。
+- 一个公网 WSS 入口承载任意数量的独立路由；同一 `channel + secret` 可有多个 Edge 和 Target，Relay 按到达顺序一对一 FIFO 配对。
+- Target 可通过 `tunnel.pool` 启动 1–64 条独立 WSS 会话；默认值为 1，设置为 2 或更高时，一个 Target 进程可以服务多个 Edge。
 - 每条路由在一条 WSS 会话中通过 yamux 承载最多 256 条并发 TCP 流。
 - TLS 1.3 内层再使用 X25519、HKDF-SHA256 和 AES-256-GCM。
 - Relay 准入令牌与 Edge/Target 端到端密钥相互独立。
 - Relay、Edge、Target 共用 CLI 和浏览器 WebUI，不需要桌面环境。
 - WebUI 支持英语和简体中文，并提供浅色、深色和跟随系统主题。
 - 客户端自动重连，退避从约 1 秒增长到最多 15 秒并带随机抖动。
-- Relay 控制台显示节点名称、可信来源 IP、角色、端点、配对关系、平台、在线时长及密文流量。
+- Relay 控制台显示节点名称、可信来源 IP、角色、端点、配对关系、平台、在线时长及密文流量。Node name 只是展示标签，多个 Edge/Target 可以同名，临时 peer ID 用于区分连接。
 
 ### 1.1 MoleX 名称与品牌含义
 
@@ -78,7 +79,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-go build -trimpath -ldflags "-s -w -X main.version=0.1.0" -o bin/molex .
+go build -trimpath -ldflags "-s -w -X main.version=0.2.0" -o bin/molex .
 ```
 
 Windows 可把输出改为 `bin/molex.exe`。发布包用户只需一个对应平台的 MoleX 二进制。
@@ -194,7 +195,7 @@ molex config init --mode punch --role edge --config edge.json
 }
 ```
 
-Edge 与 Target 的 `secret`、`token`、`remote` 和 `tunnel.remote` 必须匹配，角色必须互补。只有 Target 使用 `tunnel.local`；只有 Edge 使用 `listen`。
+Edge 与 Target 的 `secret`、`token`、`remote` 和 `tunnel.remote` 必须匹配，角色必须互补。只有 Target 使用 `tunnel.local`；只有 Edge 使用 `listen`。同一通道可以运行多个 Edge/Target；Relay 会把每个 Edge 与最早等待的 Target 配成独立会话。`tunnel.name` 仅用于 WebUI 标识，允许重复。
 
 ### 4.5 验证并启动
 
@@ -248,7 +249,8 @@ ssh -N -L 9090:127.0.0.1:9090 user@molex-host
 
 | 字段 | 用途 |
 | --- | --- |
-| 节点名称 | 来自 `tunnel.name`，便于识别机器 |
+| 节点名称 | 来自 `tunnel.name` 的展示标签，允许多个客户端同名；连接由 peer ID 区分 |
+| Target 会话池 | `tunnel.pool`，Target 的独立出站会话数量，范围 1–64，默认 1 |
 | 来源 IP | 直接 Socket 地址，或可信回环代理转发的真实 IP |
 | 角色/状态 | Edge 或 Target；等待中或已配对 |
 | 转发端点 | Edge 的本地监听或 Target 的目标服务 |
@@ -386,7 +388,7 @@ mstsc /v:127.0.0.1:13389
 
 ### 6.6 同时转发多个服务
 
-一个 MoleX 客户端进程管理一条 Edge/Target 路由。需要多个服务时，为每条服务准备独立配置和进程：
+一个 MoleX 客户端进程管理一条 Edge/Target WebSocket 路由。同一 `secret` 与 `tunnel.remote` 可以启动多个 Edge 或 Target 进程；Relay 按 FIFO 把每个 Edge 与最早等待的 Target 配成独立加密会话。需要多个服务时，为每条服务准备独立配置和进程：
 
 ```text
 ssh:      channel=home-ssh      edge=127.0.0.1:2222
@@ -472,7 +474,7 @@ molex connect \
 | Connection refused | 检查 Caddy/Relay 是否运行、端口和防火墙 |
 | TLS verification failed | 检查证书域名、证书链和系统时间 |
 | Pairing timeout | 启动另一端；核对 channel、secret、token 与互补角色 |
-| Duplicate role | 同一路由只保留一个 Edge 和一个 Target |
+| 同角色客户端等待 | 同一通道允许多个 Edge/Target；等待互补角色加入，Relay 会按 FIFO 自动配对 |
 | Edge address in use | 停止占用进程或更换 `listen` 端口 |
 | Target service unavailable | 启动目标服务，检查 `tunnel.local` 与 Target 网络权限 |
 | Not listening / 未监听 | 等待安全路由就绪；这是断线时的预期保护状态 |

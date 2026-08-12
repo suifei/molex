@@ -179,8 +179,19 @@ func requireCSRF(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (s *Server) passwordMatches(password string) bool {
+	s.authMu.RLock()
+	defer s.authMu.RUnlock()
+	if s.setupPending {
+		return false
+	}
 	candidate := hashToken(password)
 	return subtle.ConstantTimeCompare(candidate[:], s.passwordHash[:]) == 1
+}
+
+func (s *Server) requiresSetup() bool {
+	s.authMu.RLock()
+	defer s.authMu.RUnlock()
+	return s.setupPending
 }
 
 func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expires time.Time, ttl time.Duration) {

@@ -29,13 +29,15 @@ const (
 var embeddedAssets embed.FS
 
 type Options struct {
-	Listen     string
-	ConfigPath string
-	Password   string
-	AutoStart  bool
-	SessionTTL time.Duration
-	Logger     *slog.Logger
-	Now        func() time.Time
+	Listen            string
+	ConfigPath        string
+	Password          string
+	SetupPasswordPath string
+	AutoStart         bool
+	SessionTTL        time.Duration
+	Logger            *slog.Logger
+	Now               func() time.Time
+	OnReady           func(string)
 }
 
 type Server struct {
@@ -43,7 +45,9 @@ type Server struct {
 	manager      *service.Manager
 	handler      http.Handler
 	assets       fs.FS
+	authMu       sync.RWMutex
 	passwordHash [32]byte
+	setupPending bool
 	sessions     *sessionStore
 	loginLimiter *loginLimiter
 	actionMu     sync.Mutex
@@ -70,11 +74,18 @@ func New(options Options) (*Server, error) {
 	if err := validateWebListen(options.Listen); err != nil {
 		return nil, err
 	}
-	if len(options.Password) < 12 {
-		return nil, errors.New("web password must contain at least 12 characters")
-	}
-	if len(options.Password) > 1024 {
-		return nil, errors.New("web password must contain at most 1024 characters")
+	setupPending := options.Password == ""
+	if setupPending {
+		if options.SetupPasswordPath == "" {
+			return nil, errors.New("web password is required unless first-run setup is enabled")
+		}
+	} else {
+		if len(options.Password) < 12 {
+			return nil, errors.New("web password must contain at least 12 characters")
+		}
+		if len(options.Password) > 1024 {
+			return nil, errors.New("web password must contain at most 1024 characters")
+		}
 	}
 
 	assets, err := fs.Sub(embeddedAssets, "dist")
@@ -86,6 +97,7 @@ func New(options Options) (*Server, error) {
 		options:      options,
 		assets:       assets,
 		passwordHash: hashToken(options.Password),
+		setupPending: setupPending,
 		sessions:     newSessionStore(options.Now),
 		loginLimiter: newLoginLimiter(options.Now),
 		subscribers:  make(map[chan telemetry.Event]struct{}),
@@ -130,6 +142,13 @@ func (s *Server) Run(ctx context.Context) (runErr error) {
 	}
 
 	s.options.Logger.Info("Web console is ready", "listen", listener.Addr().String())
+	if s.options.OnReady != nil {
+		host := listener.Addr().String()
+		if tcpAddress, ok := listener.Addr().(*net.TCPAddr); ok {
+			host = net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", tcpAddress.Port))
+		}
+		s.options.OnReady("http://" + host + "/")
+	}
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- httpServer.Serve(listener)
@@ -155,6 +174,7 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/session", s.handleSession)
+	mux.HandleFunc("/api/setup", s.handleSetup)
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/logout", s.requireSession(s.handleLogout))
 	mux.HandleFunc("/api/config", s.requireSession(s.handleConfig))

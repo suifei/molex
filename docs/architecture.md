@@ -77,9 +77,11 @@ The route key is:
 HMAC-SHA256(secret, "molex/rendezvous/v1" || channel)
 ```
 
-Only the 32-byte result is sent to the relay. Neither the literal channel nor the payload secret is sent. The relay stores at most one waiting edge and one waiting target for each route key. Duplicate roles are rejected.
+Only the 32-byte result is sent to the relay. Neither the literal channel nor the payload secret is sent. For each route key, the relay keeps FIFO waiting queues for Edge and Target participants. Every arriving participant is paired with the oldest waiting participant of the complementary role; additional same-role participants remain queued until a peer is available. Each pair gets its own hello exchange, ephemeral keys, encrypted record connection, and yamux session. Node names are display labels only, so multiple Edge or Target participants may use the same name; the temporary Relay peer ID distinguishes them in the Web console.
 
 The route key is stable for a given secret and channel. It therefore lets the relay correlate reconnections. A low-entropy secret also permits offline guessing if an observer already knows likely channel values. Use the generated 32-byte secret.
+
+Target may run a bounded session pool with `tunnel.pool` (1–64, default 1). Pool slots are separate outbound WebSockets with independent hello packets, ephemeral X25519 keys, AES-GCM nonce state, and yamux sessions; the Relay pairs each slot independently. This avoids mixing encrypted sessions or stream namespaces while allowing one Target process to serve multiple Edge clients.
 
 ## Handshake
 
@@ -165,9 +167,9 @@ Clients reconnect after a failed session with exponential delays from one to fif
 
 A new connection creates fresh X25519 material and fresh directional keys. The Edge listener exists only while a secure peer session is ready. When Relay or Target disappears, yamux closure stops the listener and the runtime state returns to `connecting`; the previous listen address is cleared from status. Pairing recreates both the secure session and listener. Existing TCP streams fail closed and the local application must retry them.
 
-Each Relay participant owns one WebSocket read pump for its entire lifetime. While waiting, that pump processes control frames and detects disconnects; after pairing, it passes binary frames through an unbuffered ordered handoff to the bridge. A closed waiter is removed immediately, and `join` also discards a closed slot before deciding that a role is duplicated. Registry ownership decides pairing and timeout under one mutex: if pairing claims a participant at the exact timeout boundary, the timeout path observes that it is no longer waiting and keeps the paired session. Per-frame writes are limited to 30 seconds. Timeout, read failure, bridge failure, and handler shutdown all converge on a `sync.Once` close operation, while the bridge closes both participants and waits for both relay workers to exit.
+Each Relay participant owns one WebSocket read pump for its entire lifetime. While waiting, that pump processes control frames and detects disconnects; after pairing, it passes binary frames through an unbuffered ordered handoff to the bridge. Waiting participants are stored in per-route FIFO queues, and a closed waiter is removed immediately so the next compatible participant can use its place. Registry ownership decides pairing and timeout under one mutex: if pairing claims a participant at the exact timeout boundary, the timeout path observes that it is no longer waiting and keeps the paired session. Per-frame writes are limited to 30 seconds. Timeout, read failure, bridge failure, and handler shutdown all converge on a `sync.Once` close operation, while the bridge closes both participants and waits for both relay workers to exit.
 
-Transient failures do not terminate the client process. Diagnostic events classify HTTP authentication and routing responses, Caddy gateway errors, DNS resolution, refused connections, TLS verification, pairing timeout, duplicate roles, mismatched peer configuration, occupied Edge addresses, and unavailable Target services. Each message identifies the setting or service the operator should check while automatic retries continue.
+Transient failures do not terminate the client process. Diagnostic events classify HTTP authentication and routing responses, Caddy gateway errors, DNS resolution, refused connections, TLS verification, pairing timeout, mismatched peer configuration, occupied Edge addresses, and unavailable Target services. Each message identifies the setting or service the operator should check while automatic retries continue.
 
 ## Trust boundaries
 

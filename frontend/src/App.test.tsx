@@ -21,6 +21,20 @@ afterEach(() => {
 });
 
 describe("MoleX console", () => {
+  it("completes first-run password setup before showing the console", async () => {
+    vi.spyOn(api, "getSession").mockResolvedValue({ authenticated: false, setupRequired: true });
+    const setup = vi.spyOn(api, "setup").mockResolvedValue();
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Create your management password" });
+    fireEvent.change(screen.getByLabelText("New password"), { target: { value: "correct-horse-battery-staple" } });
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "correct-horse-battery-staple" } });
+    fireEvent.click(screen.getByRole("button", { name: "Finish setup" }));
+
+    await screen.findByRole("heading", { name: "Route configuration" });
+    expect(setup).toHaveBeenCalledWith("correct-horse-battery-staple");
+  });
+
   it("requires the node password and localizes login failures", async () => {
     vi.spyOn(api, "getSession").mockResolvedValue({ authenticated: false });
     vi.spyOn(api, "login").mockRejectedValue(new Error("invalid credentials"));
@@ -63,6 +77,16 @@ describe("MoleX console", () => {
     expect((screen.getByLabelText("Relay endpoint") as HTMLInputElement).value).toBe("wss://relay.example.net/ws/session");
   });
 
+  it("adds and removes forwarding rules in the Web console", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "Route configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
+    expect(screen.getByDisplayValue("route-1")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("edge-1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete rule" }));
+    expect(screen.queryByDisplayValue("route-1")).not.toBeInTheDocument();
+  });
+
   it("shows actionable validation before starting", async () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Route configuration" });
@@ -84,6 +108,8 @@ describe("MoleX console", () => {
     expect(screen.getByLabelText("Listen address")).toBeInTheDocument();
     expect(screen.getByLabelText("Admission token")).toBeInTheDocument();
     expect(screen.queryByLabelText("Relay endpoint")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Relay domain")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Official installation guide" })).toHaveAttribute("href", "https://caddyserver.com/docs/install");
   });
 
   it("shows an empty connected-client list for a relay", async () => {
@@ -94,7 +120,7 @@ describe("MoleX console", () => {
       token: "relay-token-0123456789",
       listen: "127.0.0.1:8080",
       remote: "",
-      tunnel: { local: "", remote: "", name: "" },
+      tunnel: { local: "", remote: "", name: "", pool: 1 },
     });
     vi.spyOn(api, "getStatus").mockResolvedValue({
       state: "running",
@@ -119,7 +145,7 @@ describe("MoleX console", () => {
       token: "relay-token-0123456789",
       listen: "127.0.0.1:8080",
       remote: "",
-      tunnel: { local: "", remote: "", name: "" },
+      tunnel: { local: "", remote: "", name: "", pool: 1 },
     });
     vi.spyOn(api, "getStatus").mockResolvedValue({
       state: "running",
