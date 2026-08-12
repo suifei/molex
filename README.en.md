@@ -120,7 +120,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-go build -trimpath -ldflags "-s -w -X main.version=0.2.0" -o bin/molex .
+go build -trimpath -ldflags "-s -w -X main.version=0.3.0" -o bin/molex .
 ```
 
 The frontend build must run before the Go build so the current Web assets are embedded in the binary.
@@ -257,6 +257,13 @@ MoleX publishes the material needed to deploy, inspect, verify, and reuse the pr
 | [Configuration and Caddy examples](examples/) | Minimal Relay, Edge, Target, and Caddy files to use as reviewed starting points rather than copying real credentials from documentation. |
 
 ## Community and human value
+
+### v0.3.0 latest fixes
+
+- Supports `Edge * -> Relay 1 -> Target 1`: one Target process can serve Edges from many locations.
+- `tunnel.pool: 0` enables demand-driven session growth. After an Edge is paired, Target opens the next independent WSS session, up to 65,535 sessions.
+- Every session keeps independent X25519, AES-GCM, and yamux state, preventing cross-Edge stream or key mixing.
+- Added real-socket single-Target/multiple-Edge queue, FIFO pairing, disconnect recovery, and race coverage.
 
 MoleX contributes inspectable engineering foundations rather than unverifiable networking claims:
 

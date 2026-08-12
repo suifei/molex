@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 env:
-  MOLEX_VERSION: 0.2.0
+  MOLEX_VERSION: 0.3.0
 
 jobs:
   test:

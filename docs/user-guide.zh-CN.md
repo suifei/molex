@@ -79,7 +79,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-go build -trimpath -ldflags "-s -w -X main.version=0.2.0" -o bin/molex .
+go build -trimpath -ldflags "-s -w -X main.version=0.3.0" -o bin/molex .
 ```
 
 Windows 可把输出改为 `bin/molex.exe`。发布包用户只需一个对应平台的 MoleX 二进制。

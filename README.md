@@ -120,7 +120,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-go build -trimpath -ldflags "-s -w -X main.version=0.2.0" -o bin/molex .
+go build -trimpath -ldflags "-s -w -X main.version=0.3.0" -o bin/molex .
 ```
 
 必须先构建前端，再构建 Go 程序，确保当前 Web 资源被嵌入二进制。
@@ -257,6 +257,13 @@ MoleX 公开部署、检查、验证和复用所需的资料，不把实现包�
 | [配置与 Caddy 示例](examples/) | 经过核对的 Relay、Edge、Target 和 Caddy 最小起点，避免从文档中复制真实凭据。 |
 
 ## 对社区与人类的价值
+
+### v0.3.0 最新修复
+
+- 支持 `Edge * -> Relay 1 -> Target 1`：一个 Target 进程可以服务多个不同位置的 Edge。
+- `tunnel.pool: 0` 启用按需会话扩容；每个 Edge 配对成功后，Target 再建立下一条独立 WSS 会话，最多 65,535 条。
+- 每条会话保持独立的 X25519、AES-GCM 和 yamux 状态，避免跨 Edge 串流或串密钥。
+- 新增真实 Socket 的单 Target 多 Edge 排队、断线恢复和 FIFO 配对测试，并通过竞态测试。
 
 MoleX 希望贡献可检查的工程基础，而不是无法验证的网络能力宣传：
 

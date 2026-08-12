@@ -78,7 +78,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-go build -trimpath -ldflags "-s -w -X main.version=0.2.0" -o bin/molex .
+go build -trimpath -ldflags "-s -w -X main.version=0.3.0" -o bin/molex .
 ```
 
 Use `bin/molex.exe` on Windows. Release-package users need only the single binary for their platform.
