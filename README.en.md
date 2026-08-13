@@ -120,7 +120,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-go build -trimpath -ldflags "-s -w -X main.version=0.3.0" -o bin/molex .
+go build -trimpath -ldflags "-s -w -X main.version=0.3.1" -o bin/molex .
 ```
 
 The frontend build must run before the Go build so the current Web assets are embedded in the binary.
@@ -133,7 +133,7 @@ Create `relay.json` from [examples/relay.json](examples/relay.json), replace its
 molex web --config relay.json --password-file ./web-password --autostart
 ```
 
-The Relay data plane listens on `127.0.0.1:8080`; the management console listens separately on `127.0.0.1:9090`. Configure Caddy to publish `/ws/session` and the authenticated console through HTTPS. Use the audited [Caddy example](examples/Caddyfile) and [deployment guide](docs/deployment-caddy.md).
+The Relay data plane listens on `127.0.0.1:8080`. The management console prefers `127.0.0.1:9090`, advances to a free loopback port when it is occupied, prints the selected URL, and opens the default browser after listening succeeds. Server and reverse-proxy deployments should pin it with `--listen 127.0.0.1:9090 --open-browser=false`. Configure Caddy to publish `/ws/session` and the authenticated console through HTTPS. Use the audited [Caddy example](examples/Caddyfile) and [deployment guide](docs/deployment-caddy.md).
 
 ### 3. Start the private Target
 
@@ -167,7 +167,7 @@ Use an SSH tunnel for private management access:
 ssh -N -L 9090:127.0.0.1:9090 user@molex-host
 ```
 
-Then open `http://127.0.0.1:9090`. On a public Relay, a dedicated HTTPS Caddy hostname is more convenient. MoleX rejects non-loopback management listeners, so remote access must use an HTTPS reverse proxy or SSH forwarding. The console uses secure session cookies, CSRF protection, same-origin checks, and rate-limited login attempts.
+This command assumes the remote WebUI was explicitly pinned to `127.0.0.1:9090`. Then open `http://127.0.0.1:9090`. On a public Relay, a dedicated HTTPS Caddy hostname is more convenient. MoleX rejects non-loopback management listeners, so remote access must use an HTTPS reverse proxy or SSH forwarding. The console uses secure session cookies, CSRF protection, same-origin checks, and rate-limited login attempts.
 
 The Web console controls the selected runtime in-process; it does not spawn another MoleX process. Relay presents connected clients like a router table, including node identity, trusted source IP, endpoints, pairing, platform, uptime, and live ciphertext counters.
 
@@ -249,7 +249,8 @@ MoleX publishes the material needed to deploy, inspect, verify, and reuse the pr
 | Document | Use it for |
 | --- | --- |
 | [Complete illustrated user guide](docs/user-guide.md) | Relay/Edge/Target setup, WebUI screenshots, OpenAI/API and TCP recipes, UDP boundaries, operations, troubleshooting, and MIT terms. Available in 12 languages from its header. |
-| [Upgrade guide](docs/upgrade-guide.md) | Differences between `v0.1.0`, `v0.2.0`, and `v0.3.0`, compatibility, role upgrade order, configuration migration, rollback, and acceptance checks. |
+| [Upgrade guide](docs/upgrade-guide.md) | Differences from `v0.1.0` through `v0.3.1`, compatibility, role upgrade order, configuration migration, rollback, and acceptance checks. |
+| [v0.3.1 release notes](docs/release-v0.3.1.md) | Standby Target, handshake deadline, socket growth, automatic WebUI ports, required role upgrades, and verification scope. |
 | [Architecture and protocol](docs/architecture.md) | Topology, management plane, encrypted records, rendezvous, handshake, yamux lifecycle, reconnection, concurrency, and trust boundaries. |
 | [Caddy deployment](docs/deployment-caddy.md) | Production WSS routing, loopback listeners, HTTPS management, systemd, firewall rules, health checks, and guided diagnostics. |
 | [Security model](docs/security.md) | Security goals and non-goals, credential separation, metadata visibility, TLS assumptions, local exposure, rotation, and disclosure. |
@@ -259,7 +260,15 @@ MoleX publishes the material needed to deploy, inspect, verify, and reuse the pr
 
 ## Community and human value
 
-### v0.3.0 latest fixes
+### v0.3.1 latest fixes
+
+- Relay retains unmatched Targets as long-lived hot standby, removing periodic connect/disconnect churn from `pool: 0` spare sessions.
+- Encrypted-session setup responds immediately to cancellation instead of waiting for a peer-hello read deadline.
+- Each adaptive Target slot expands the pool only once, preventing repeated reconnects from accumulating spare sockets.
+- WebUI prefers `9090`, advances to another loopback port when occupied, and opens the default browser only after listening succeeds.
+- Added four-Edge concurrency, standby timeout, connection refusal, latency, abrupt disconnect, and repeated network-flap recovery tests.
+
+### v0.3.0
 
 - Supports `Edge * -> Relay 1 -> Target 1`: one Target process can serve Edges from many locations.
 - `tunnel.pool: 0` enables demand-driven session growth. After an Edge is paired, Target opens the next independent WSS session, up to 65,535 sessions.

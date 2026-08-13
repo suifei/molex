@@ -40,14 +40,41 @@ func OpenSecureClient(ctx context.Context, ws *websocket.Conn, secret []byte, ch
 }
 
 func OpenSecureClientWithMetadata(ctx context.Context, ws *websocket.Conn, secret []byte, channel string, role Role, relayToken string, metadata RelayMetadata) (*RecordConn, error) {
+	// WebSocket reads used during the peer-hello exchange do not observe a
+	// context directly. Close the socket when the caller cancels so a Target
+	// waiting for a matching Edge can stop promptly instead of remaining stuck
+	// in ReadMessage until the network deadline fires.
+	stopWatch := make(chan struct{})
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-ctx.Done():
+			// Prefer a completed handshake handoff when cancellation and the
+			// stop signal become ready together. This avoids returning an
+			// already-closed RecordConn at the boundary.
+			select {
+			case <-stopWatch:
+				return
+			default:
+				_ = ws.Close()
+			}
+		case <-stopWatch:
+		}
+	}()
+	defer func() {
+		close(stopWatch)
+		<-watchDone
+	}()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	hello, err := NewHello(secret, channel, role)
 	if err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(15 * time.Second)
-	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
-		deadline = contextDeadline
-	}
+	deadline := secureHandshakeDeadline(ctx)
 	if err := ws.SetWriteDeadline(deadline); err != nil {
 		return nil, err
 	}
@@ -63,7 +90,14 @@ func OpenSecureClientWithMetadata(ctx context.Context, ws *websocket.Conn, secre
 	if err := ws.WriteMessage(websocket.BinaryMessage, hello.Packet[:]); err != nil {
 		return nil, fmt.Errorf("send client hello: %w", err)
 	}
-	if err := ws.SetReadDeadline(deadline); err != nil {
+	peerDeadline := deadline
+	if role == RoleTarget {
+		// A Target can be deliberate hot-standby capacity for a future Edge.
+		// Its wait is bounded by context cancellation or transport failure, not
+		// the short cryptographic-handshake timeout used by an Edge attempt.
+		peerDeadline = time.Time{}
+	}
+	if err := ws.SetReadDeadline(peerDeadline); err != nil {
 		return nil, err
 	}
 	messageType, peerPacket, err := ws.ReadMessage()
@@ -81,12 +115,28 @@ func OpenSecureClientWithMetadata(ctx context.Context, ws *websocket.Conn, secre
 	if err != nil {
 		return nil, err
 	}
+	if err := conn.SetDeadline(secureHandshakeDeadline(ctx)); err != nil {
+		conn.Close()
+		return nil, err
+	}
 	if err := conn.exchangeFinished(keys); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		conn.Close()
 		return nil, err
 	}
 	conn.SetDeadline(time.Time{})
 	return conn, nil
+}
+
+func secureHandshakeDeadline(ctx context.Context) time.Time {
+	deadline := time.Now().Add(15 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		return contextDeadline
+	}
+	return deadline
 }
 
 func newRecordConn(ws *websocket.Conn, keys SessionKeys) (*RecordConn, error) {

@@ -78,7 +78,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-go build -trimpath -ldflags "-s -w -X main.version=0.3.0" -o bin/molex .
+go build -trimpath -ldflags "-s -w -X main.version=0.3.1" -o bin/molex .
 ```
 
 Use `bin/molex.exe` on Windows. Release-package users need only the single binary for their platform.
@@ -212,7 +212,7 @@ molex web --config target.json --password-file ./web-password --autostart
 molex web --config edge.json   --password-file ./web-password --autostart
 ```
 
-The management page defaults to `http://127.0.0.1:9090` and rejects non-loopback binding. For occasional remote management:
+The management page prefers `http://127.0.0.1:9090`; if that port is occupied, MoleX advances to a free loopback port, prints the selected URL, and opens the default browser after listening succeeds. For servers, SSH forwarding, and reverse proxies, pin the address with `--listen 127.0.0.1:9090 --open-browser=false`. Non-loopback binding is always rejected. For occasional remote management:
 
 ```bash
 ssh -N -L 9090:127.0.0.1:9090 user@molex-host
@@ -389,7 +389,7 @@ postgres: channel=home-pg       edge=127.0.0.1:15432
 api:      channel=internal-api  edge=127.0.0.1:18080
 ```
 
-All processes still use `wss://molex.example.com/ws/session`, so the public surface remains one Caddy `443/tcp` listener. If every process exposes a WebUI, give each one a different loopback management port such as `9090`, `9091`, and `9092`.
+All processes still use `wss://molex.example.com/ws/session`, so the public surface remains one Caddy `443/tcp` listener. Multiple WebUIs on one host automatically select distinct loopback ports starting at `9090`; pin `9090`, `9091`, and `9092` explicitly when stable SSH-forward or reverse-proxy addresses are required.
 
 ## 7. UDP status and alternatives
 

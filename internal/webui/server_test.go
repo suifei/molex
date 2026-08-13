@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -296,6 +298,89 @@ func TestRunStopsAutostartWhenWebListenFails(t *testing.T) {
 	}
 	if server.manager.Running() {
 		t.Fatal("autostart runtime remained active after the web listener failed")
+	}
+}
+
+func TestRunSelectsAvailableLoopbackPort(t *testing.T) {
+	ready := make(chan string, 1)
+	server, err := New(Options{
+		Listen:     "127.0.0.1:0",
+		ConfigPath: filepath.Join(t.TempDir(), "molex.json"),
+		Password:   testPassword,
+		OnReady:    func(address string) { ready <- address },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Run(ctx) }()
+
+	var address string
+	select {
+	case address = <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for WebUI readiness")
+	}
+	u, err := url.Parse(address)
+	if err != nil || u.Hostname() != "127.0.0.1" || u.Port() == "0" || u.Port() == "" {
+		t.Fatalf("WebUI selected invalid loopback address %q", address)
+	}
+	response, err := http.Get(address + "healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("health status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WebUI did not stop")
+	}
+}
+
+func TestRunAdvancesFromOccupiedDefaultPort(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	occupiedPort := occupied.Addr().(*net.TCPAddr).Port
+	if occupiedPort == 65535 {
+		t.Skip("cannot test the next port after 65535")
+	}
+	ready := make(chan string, 1)
+	server, err := New(Options{
+		Listen:     occupied.Addr().String(),
+		AutoListen: true,
+		ConfigPath: filepath.Join(t.TempDir(), "molex.json"),
+		Password:   testPassword,
+		OnReady:    func(address string) { ready <- address },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Run(ctx) }()
+	select {
+	case address := <-ready:
+		u, err := url.Parse(address)
+		if err != nil || u.Port() == strconv.Itoa(occupiedPort) || u.Port() == "" {
+			t.Fatalf("WebUI did not advance from occupied port %d: %q", occupiedPort, address)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for fallback WebUI port")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

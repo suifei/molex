@@ -149,12 +149,18 @@ type targetPoolReporter struct {
 	mu       sync.Mutex
 	total    int
 	ready    []bool
+	expanded []bool
 	reporter telemetry.Reporter
 	onReady  func()
 }
 
 func newTargetPoolReporter(total int, reporter telemetry.Reporter) *targetPoolReporter {
-	return &targetPoolReporter{total: total, ready: make([]bool, total), reporter: reporter}
+	return &targetPoolReporter{
+		total:    total,
+		ready:    make([]bool, total),
+		expanded: make([]bool, total),
+		reporter: reporter,
+	}
 }
 
 func (p *targetPoolReporter) slot(slot int) telemetry.Reporter {
@@ -173,6 +179,9 @@ func (p *targetPoolReporter) report(slot int, event telemetry.Event) {
 	case "target_ready":
 		if !p.ready[slot] {
 			p.ready[slot] = true
+		}
+		if !p.expanded[slot] {
+			p.expanded[slot] = true
 			readyCallback = p.onReady
 		}
 		connected := p.readyCount()

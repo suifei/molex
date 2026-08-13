@@ -352,6 +352,32 @@ func TestPairTimeoutKeepsParticipantClaimedByPair(t *testing.T) {
 	}
 }
 
+func TestWaitingTargetIsKeptAsHotStandby(t *testing.T) {
+	server := New(Options{PairTimeout: 10 * time.Millisecond})
+	participant := &participant{
+		role:   protocol.RoleTarget,
+		paired: make(chan struct{}),
+		done:   make(chan struct{}),
+	}
+	returned := make(chan struct{})
+	go func() {
+		server.awaitParticipant(context.Background(), participant)
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+		t.Fatal("unpaired Target was closed by pairing timeout")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(participant.done)
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("waiting Target did not finish after connection close")
+	}
+}
+
 func TestWaitingParticipantDisconnectReleasesRoleImmediately(t *testing.T) {
 	events := make(chan telemetry.Event, 16)
 	server := New(Options{

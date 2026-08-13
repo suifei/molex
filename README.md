@@ -120,7 +120,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-go build -trimpath -ldflags "-s -w -X main.version=0.3.0" -o bin/molex .
+go build -trimpath -ldflags "-s -w -X main.version=0.3.1" -o bin/molex .
 ```
 
 必须先构建前端，再构建 Go 程序，确保当前 Web 资源被嵌入二进制。
@@ -133,7 +133,7 @@ go build -trimpath -ldflags "-s -w -X main.version=0.3.0" -o bin/molex .
 molex web --config relay.json --password-file ./web-password --autostart
 ```
 
-Relay 数据面监听 `127.0.0.1:8080`，管理控制台单独监听 `127.0.0.1:9090`。通过 Caddy 使用 HTTPS 发布 `/ws/session` 和带认证的控制台。请使用已经核对的 [Caddy 示例](examples/Caddyfile)和[部署指南](docs/deployment-caddy.md)。
+Relay 数据面监听 `127.0.0.1:8080`。管理控制台优先使用 `127.0.0.1:9090`，端口占用时自动向后选择可用回环端口，并在监听成功后打开默认浏览器；终端会打印实际地址。服务器和反向代理部署应显式使用 `--listen 127.0.0.1:9090 --open-browser=false` 固定地址。通过 Caddy 使用 HTTPS 发布 `/ws/session` 和带认证的控制台。请使用已经核对的 [Caddy 示例](examples/Caddyfile)和[部署指南](docs/deployment-caddy.md)。
 
 ### 3. 启动内网 Target
 
@@ -167,7 +167,7 @@ ssh -p 2222 user@127.0.0.1
 ssh -N -L 9090:127.0.0.1:9090 user@molex-host
 ```
 
-然后打开 `http://127.0.0.1:9090`。公网 Relay 更适合使用独立的 Caddy HTTPS 管理域名。MoleX 会拒绝非回环管理监听，因此远程访问必须经过 HTTPS 反向代理或 SSH 转发。控制台使用安全会话 Cookie、CSRF 防护、同源检查和登录限速。
+该命令要求远端 WebUI 已显式固定为 `127.0.0.1:9090`。然后打开 `http://127.0.0.1:9090`。公网 Relay 更适合使用独立的 Caddy HTTPS 管理域名。MoleX 会拒绝非回环管理监听，因此远程访问必须经过 HTTPS 反向代理或 SSH 转发。控制台使用安全会话 Cookie、CSRF 防护、同源检查和登录限速。
 
 Web 控制台在当前进程内控制所选运行时，不会创建另一个 MoleX 进程。Relay 会像路由器连接表一样显示节点身份、可信来源 IP、端点、配对关系、运行平台、在线时长和实时密文计数。
 
@@ -249,7 +249,8 @@ MoleX 公开部署、检查、验证和复用所需的资料，不把实现包�
 | 文档 | 用途 |
 | --- | --- |
 | [完整图文使用手册](docs/user-guide.zh-CN.md) | Relay、Edge、Target 三端配置，WebUI 截图，OpenAI/API 与 TCP 场景，UDP 边界，运维、排障和 MIT 条款；顶部可切换 12 种语言。 |
-| [版本升级指南](docs/upgrade-guide.zh-CN.md) | `v0.1.0`、`v0.2.0`、`v0.3.0` 的功能差异、兼容矩阵、三端升级顺序、配置迁移、回滚和验收清单。 |
+| [版本升级指南](docs/upgrade-guide.zh-CN.md) | `v0.1.0` 至 `v0.3.1` 的功能差异、兼容矩阵、三端升级顺序、配置迁移、回滚和验收清单。 |
+| [v0.3.1 发行说明](docs/release-v0.3.1.zh-CN.md) | 热备 Target、握手期限、Socket 增殖、WebUI 自动端口、升级端点和完整验证范围。 |
 | [架构与协议](docs/architecture.md) | 组件拓扑、管理面、加密记录、会合、握手、yamux 生命周期、重连、并发和信任边界。 |
 | [Caddy 部署](docs/deployment-caddy.md) | 生产 WSS 路由、回环监听、HTTPS 管理、systemd、防火墙、健康检查和指导性诊断。 |
 | [安全模型](docs/security.md) | 安全目标与非目标、凭据分离、元数据可见性、TLS 假设、本地暴露、轮换和漏洞报告。 |
@@ -259,7 +260,15 @@ MoleX 公开部署、检查、验证和复用所需的资料，不把实现包�
 
 ## 对社区与人类的价值
 
-### v0.3.0 最新修复
+### v0.3.1 最新修复
+
+- Relay 将未配对 Target 保留为长期热备，修复 `pool: 0` 备用会话周期性接入/断开的假告警。
+- 加密握手等待期间支持立即取消，停止 Target 或网络切换时不再等待读取超时。
+- 自适应 Target 池的每个会话槽只扩容一次，反复断线重连不会累积多余热备 Socket。
+- WebUI 优先使用 `9090`，冲突时自动选择后续回环端口，并在监听成功后打开默认浏览器。
+- 新增 4 Edge 并发、Target 热备超时、连接拒绝、延迟、突然断网和三轮网络抖动恢复测试。
+
+### v0.3.0
 
 - 支持 `Edge * -> Relay 1 -> Target 1`：一个 Target 进程可以服务多个不同位置的 Edge。
 - `tunnel.pool: 0` 启用按需会话扩容；每个 Edge 配对成功后，Target 再建立下一条独立 WSS 会话，最多 65,535 条。

@@ -126,7 +126,7 @@ molex web --config target.json --password-file ./web-password --autostart
 molex web --config edge.json   --password-file ./web-password --autostart
 ```
 
-La gestión escucha solo en `127.0.0.1:9090`. Para acceso remoto ocasional:
+La WebUI prefiere `127.0.0.1:9090`, elige automáticamente otro puerto loopback libre si está ocupado y después abre el navegador predeterminado. En servidores, SSH o reverse proxy, fije `--listen 127.0.0.1:9090 --open-browser=false`. Para acceso remoto ocasional:
 
 ```bash
 ssh -N -L 9090:127.0.0.1:9090 user@molex-host
@@ -182,7 +182,7 @@ curl --connect-to api.openai.com:443:127.0.0.1:18443 \
 
 ### Varios servicios
 
-Un proceso cliente gestiona una ruta. Use configuraciones, channels, puertos Edge y procesos independientes para SSH, base de datos y API. Todos pueden compartir `wss://molex.example.com/ws/session`; el servidor sigue exponiendo un único `443/tcp`. Asigne puertos WebUI de loopback distintos (`9090`, `9091`, `9092`).
+Un proceso cliente gestiona una ruta. Use configuraciones, channels, puertos Edge y procesos independientes para SSH, base de datos y API. Todos pueden compartir `wss://molex.example.com/ws/session`; el servidor sigue exponiendo un único `443/tcp`. Varias WebUI eligen puertos loopback distintos automáticamente; fije `9090`, `9091`, `9092` para direcciones proxy estables.
 
 ## 7. UDP
 

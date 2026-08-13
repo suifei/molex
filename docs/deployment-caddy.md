@@ -26,10 +26,12 @@ On the first run, you can omit `--password-file`: MoleX opens the browser setup 
 molex web \
   --config /var/lib/molex/molex.json \
   --password-file /etc/molex/web-password \
+  --listen 127.0.0.1:9090 \
+  --open-browser=false \
   --autostart
 ```
 
-`--listen` controls the management listener and defaults to `127.0.0.1:9090`. The `listen` field in `molex.json` controls the relay data listener. MoleX rejects a non-loopback management address.
+`--listen` controls the management listener. Interactive use prefers `127.0.0.1:9090` and advances to a free loopback port when it is occupied. Services and reverse proxies must explicitly pin the address as above; `--open-browser=false` prevents attempts to launch a browser on a headless host. The `listen` field in `molex.json` controls the relay data listener. MoleX rejects a non-loopback management address.
 
 On Windows and macOS, launching `molex` without arguments uses the per-user `MoleX` configuration directory, starts the loopback Web console, and opens the default browser. The browser-based setup is the supported management experience; there is no desktop shell.
 
@@ -95,7 +97,7 @@ Type=simple
 User=molex
 Group=molex
 UMask=0077
-ExecStart=/usr/local/bin/molex web --config /var/lib/molex/molex.json --password-file /etc/molex/web-password --autostart
+ExecStart=/usr/local/bin/molex web --config /var/lib/molex/molex.json --password-file /etc/molex/web-password --listen 127.0.0.1:9090 --open-browser=false --autostart
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

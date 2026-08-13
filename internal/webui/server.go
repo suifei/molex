@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ var embeddedAssets embed.FS
 
 type Options struct {
 	Listen            string
+	AutoListen        bool
 	ConfigPath        string
 	Password          string
 	SetupPasswordPath string
@@ -130,7 +132,7 @@ func (s *Server) Run(ctx context.Context) (runErr error) {
 		}
 	}
 
-	listener, err := net.Listen("tcp", s.options.Listen)
+	listener, err := listenWebConsole(s.options.Listen, s.options.AutoListen)
 	if err != nil {
 		return fmt.Errorf("listen for web console: %w", err)
 	}
@@ -168,6 +170,37 @@ func (s *Server) Run(ctx context.Context) (runErr error) {
 		}
 		return nil
 	}
+}
+
+func listenWebConsole(address string, auto bool) (net.Listener, error) {
+	if !auto {
+		return net.Listen("tcp", address)
+	}
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return nil, err
+	}
+	if port == 0 {
+		return net.Listen("tcp", address)
+	}
+	const attempts = 100
+	var lastErr error
+	for candidate := port; candidate < port+attempts && candidate <= 65535; candidate++ {
+		candidateAddress := net.JoinHostPort(host, strconv.Itoa(candidate))
+		listener, err := net.Listen("tcp", candidateAddress)
+		if err == nil {
+			return listener, nil
+		}
+		// AutoListen is only enabled for the validated loopback default. Try
+		// the next candidate without connecting to the process that owns the
+		// current port; probing it could trigger an unrelated local service.
+		lastErr = err
+	}
+	return nil, fmt.Errorf("no available Web console port from %d to %d: %w", port, min(port+attempts-1, 65535), lastErr)
 }
 
 func (s *Server) routes() http.Handler {

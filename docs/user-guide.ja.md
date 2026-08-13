@@ -126,7 +126,7 @@ molex web --config target.json --password-file ./web-password --autostart
 molex web --config edge.json   --password-file ./web-password --autostart
 ```
 
-管理 UI は `127.0.0.1:9090` の loopback のみです。リモート管理には SSH forwarding を使います。
+WebUI は `127.0.0.1:9090` を優先し、使用中なら空いている loopback port を自動選択して、listen 成功後に既定ブラウザーを開きます。Server、SSH、reverse proxy では `--listen 127.0.0.1:9090 --open-browser=false` で固定してください。リモート管理には SSH forwarding を使います。
 
 ```bash
 ssh -N -L 9090:127.0.0.1:9090 user@molex-host
@@ -182,7 +182,7 @@ curl --connect-to api.openai.com:443:127.0.0.1:18443 \
 
 ### 複数サービス
 
-1 client process が 1 route を管理します。SSH、DB、API ごとに config、channel、Edge port、process を分けます。すべて同じ `wss://molex.example.com/ws/session` を共有でき、公開 port は `443/tcp` のままです。複数 WebUI には `9090`、`9091`、`9092` のような別々の loopback port が必要です。
+1 client process が 1 route を管理します。SSH、DB、API ごとに config、channel、Edge port、process を分けます。すべて同じ `wss://molex.example.com/ws/session` を共有でき、公開 port は `443/tcp` のままです。複数 WebUI は異なる loopback port を自動選択します。安定した proxy address が必要なら `9090`、`9091`、`9092` を明示してください。
 
 ## 7. UDP
 

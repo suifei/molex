@@ -257,6 +257,23 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) awaitParticipant(ctx context.Context, participant *participant) {
+	// Target sessions are long-lived hot-standby capacity in adaptive pool
+	// mode. Keep an unmatched Target connected until it is paired; otherwise
+	// the Target would hit the pairing timeout and reconnect continuously even
+	// though the existing Edge route is healthy. Edge waiters still use the
+	// timeout to release stale local clients.
+	if participant.role == protocol.RoleTarget {
+		select {
+		case <-participant.paired:
+			select {
+			case <-participant.done:
+			case <-ctx.Done():
+			}
+		case <-participant.done:
+		case <-ctx.Done():
+		}
+		return
+	}
 	timer := time.NewTimer(s.options.PairTimeout)
 	defer timer.Stop()
 	select {

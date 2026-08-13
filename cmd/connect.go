@@ -62,7 +62,7 @@ func newConnectCommand() *cobra.Command {
 	command.Flags().StringVar(&local, "local", "", "target service address")
 	command.Flags().StringVar(&channel, "channel", "", "shared rendezvous channel")
 	command.Flags().StringVar(&name, "name", "", "client name shown in the Relay console")
-	command.Flags().IntVar(&pool, "pool", 0, "target session pool size (1-64)")
+	command.Flags().IntVar(&pool, "pool", 0, "target session pool size (0 for adaptive, or 1-65535)")
 	command.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return fmt.Errorf("connect flags: %w", err) })
 	return command
 }

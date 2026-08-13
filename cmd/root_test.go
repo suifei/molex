@@ -36,6 +36,25 @@ func TestRootExposesWebWithoutDesktopGUI(t *testing.T) {
 	}
 }
 
+func TestWebCommandDefaultsToAutomaticLoopbackManagement(t *testing.T) {
+	command := newWebCommand()
+	listen := command.Flags().Lookup("listen")
+	openBrowser := command.Flags().Lookup("open-browser")
+	if listen == nil || listen.DefValue != "127.0.0.1:9090" {
+		t.Fatalf("default WebUI listen = %#v, want 127.0.0.1:9090", listen)
+	}
+	if openBrowser == nil || openBrowser.DefValue != "true" {
+		t.Fatalf("default open-browser = %#v, want true", openBrowser)
+	}
+}
+
+func TestConnectCommandDocumentsAdaptiveTargetPoolRange(t *testing.T) {
+	pool := newConnectCommand().Flags().Lookup("pool")
+	if pool == nil || !strings.Contains(pool.Usage, "0 for adaptive") || !strings.Contains(pool.Usage, "65535") {
+		t.Fatalf("pool flag does not document adaptive range: %#v", pool)
+	}
+}
+
 func TestConfigInitAndCheck(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "molex.json")
 	root := newRootCommand("test")

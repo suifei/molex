@@ -36,6 +36,8 @@ Additional recovery simulations use the same real sockets and protocol stack:
 
 These tests cover WebSocket upgrade, bearer admission, route pairing, X25519/PSK handshake, AES-GCM records, yamux multiplexing, target dialing, TCP copying, concurrent streams, cancellation, disconnect detection, listener teardown, and automatic route recovery.
 
+The real-socket suite also covers four concurrent Edge/Target pairs, adaptive Target hot standby beyond the Relay pairing timeout, and three repeated network-flap cycles through a controllable TCP proxy. Each cycle adds forwarding latency, drops every established WSS transport, rejects fresh connection attempts, waits for all Edges to report reconnecting, and verifies fresh TCP round trips after recovery. TCP byte loss is not fabricated above the transport layer because that would corrupt stream semantics rather than model packet loss; operating-system TCP retransmission remains responsible for packet loss.
+
 The stream worker test verifies that the per-route concurrency guard never admits more than its bound and that shutdown waits for admitted work to drain.
 
 Run only that simulation with:
@@ -100,12 +102,12 @@ Connect to the edge address in a fourth terminal. Do not use plain `ws://` for a
 Build the frontend and binary, create three configuration files and three password files, then start one console per role on different loopback management ports:
 
 ```bash
-molex web --config relay.json  --listen 127.0.0.1:9090 --password-file relay.password  --autostart
-molex web --config target.json --listen 127.0.0.1:9091 --password-file target.password --autostart
-molex web --config edge.json   --listen 127.0.0.1:9092 --password-file edge.password   --autostart
+molex web --config relay.json  --listen 127.0.0.1:9090 --password-file relay.password  --open-browser=false --autostart
+molex web --config target.json --listen 127.0.0.1:9091 --password-file target.password --open-browser=false --autostart
+molex web --config edge.json   --listen 127.0.0.1:9092 --password-file edge.password   --open-browser=false --autostart
 ```
 
-Open all three consoles, verify their running state, and pass traffic through the edge listener. On separate hosts, the same default management port can be reused.
+Open all three consoles, verify their running state, and pass traffic through the edge listener. Without explicit `--listen`, instances on one host automatically select available loopback ports starting at `9090`; fixed ports are used here to make the test URLs deterministic.
 
 ## Release checks
 

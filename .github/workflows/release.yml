@@ -113,8 +113,13 @@ jobs:
             --repo "$GITHUB_REPOSITORY"
             --verify-tag
             --title "MoleX $GITHUB_REF_NAME"
-            --generate-notes
           )
+          notes_file="docs/release-$GITHUB_REF_NAME.md"
+          if [[ -f "$notes_file" ]]; then
+            release_flags+=(--notes-file "$notes_file")
+          else
+            release_flags+=(--generate-notes)
+          fi
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             release_flags+=(--prerelease)
           fi

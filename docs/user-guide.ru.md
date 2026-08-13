@@ -126,7 +126,7 @@ molex web --config target.json --password-file ./web-password --autostart
 molex web --config edge.json   --password-file ./web-password --autostart
 ```
 
-Управление слушает только `127.0.0.1:9090`. Для временного удалённого доступа:
+WebUI предпочитает `127.0.0.1:9090`, при занятости автоматически выбирает свободный loopback-порт и после запуска открывает браузер по умолчанию. Для сервера, SSH или reverse proxy закрепите `--listen 127.0.0.1:9090 --open-browser=false`. Для временного удалённого доступа:
 
 ```bash
 ssh -N -L 9090:127.0.0.1:9090 user@molex-host
@@ -182,7 +182,7 @@ curl --connect-to api.openai.com:443:127.0.0.1:18443 \
 
 ### Несколько сервисов
 
-Один client process управляет одним маршрутом. Для SSH, БД и API используйте отдельные config, channel, Edge port и process. Все могут подключаться к `wss://molex.example.com/ws/session`, поэтому публичным остаётся один `443/tcp`. Для нескольких WebUI нужны разные loopback-порты (`9090`, `9091`, `9092`).
+Один client process управляет одним маршрутом. Для SSH, БД и API используйте отдельные config, channel, Edge port и process. Все могут подключаться к `wss://molex.example.com/ws/session`, поэтому публичным остаётся один `443/tcp`. Несколько WebUI автоматически выбирают разные loopback-порты; для стабильных proxy-адресов явно задайте `9090`, `9091`, `9092`.
 
 ## 7. UDP
 

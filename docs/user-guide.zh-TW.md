@@ -128,7 +128,7 @@ molex web --config target.json --password-file ./web-password --autostart
 molex web --config edge.json   --password-file ./web-password --autostart
 ```
 
-管理介面預設為回環 `127.0.0.1:9090`。遠端使用 SSH forwarding：
+管理介面優先使用 `127.0.0.1:9090`，占用時自動選擇其他回環 port，監聽成功後開啟預設瀏覽器。伺服器、SSH forwarding 或反向代理請固定使用 `--listen 127.0.0.1:9090 --open-browser=false`。遠端使用 SSH forwarding：
 
 ```bash
 ssh -N -L 9090:127.0.0.1:9090 user@molex-host
@@ -176,7 +176,7 @@ curl --connect-to api.openai.com:443:127.0.0.1:18443 \
 
 ### 多服務
 
-一個 client process 管理一條 route。多服務使用不同 config、channel、本機 port 與 process，但都連線到同一個 `/ws/session`，所以公網仍只有 `443/tcp`。多個 WebUI 必須使用不同回環管理 port，例如 9090、9091、9092。
+一個 client process 管理一條 route。多服務使用不同 config、channel、本機 port 與 process，但都連線到同一個 `/ws/session`，所以公網仍只有 `443/tcp`。多個 WebUI 會自動選擇不同回環管理 port；需要穩定代理位址時請明確指定 9090、9091、9092。
 
 ## 7. UDP
 

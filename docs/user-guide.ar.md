@@ -126,7 +126,7 @@ molex web --config target.json --password-file ./web-password --autostart
 molex web --config edge.json   --password-file ./web-password --autostart
 ```
 
-تستمع الإدارة على loopback `127.0.0.1:9090` فقط. للوصول البعيد المؤقت:
+تفضّل WebUI العنوان `127.0.0.1:9090`، وتختار تلقائياً منفذ loopback حراً عند انشغاله، ثم تفتح المتصفح الافتراضي. على الخادم أو مع SSH/reverse proxy ثبّت `--listen 127.0.0.1:9090 --open-browser=false`. للوصول البعيد المؤقت:
 
 ```bash
 ssh -N -L 9090:127.0.0.1:9090 user@molex-host
@@ -182,7 +182,7 @@ curl --connect-to api.openai.com:443:127.0.0.1:18443 \
 
 ### خدمات متعددة
 
-يدير client process واحد route واحدة. استخدم config وchannel وEdge port وprocess مستقلة لكل من SSH وقاعدة البيانات وAPI. يمكن للجميع مشاركة `wss://molex.example.com/ws/session` ليبقى `443/tcp` المنفذ العام الوحيد. تحتاج WebUI المتعددة إلى منافذ loopback مختلفة مثل `9090` و`9091` و`9092`.
+يدير client process واحد route واحدة. استخدم config وchannel وEdge port وprocess مستقلة لكل من SSH وقاعدة البيانات وAPI. يمكن للجميع مشاركة `wss://molex.example.com/ws/session` ليبقى `443/tcp` المنفذ العام الوحيد. تختار WebUI المتعددة منافذ loopback مختلفة تلقائياً؛ ثبّت `9090` و`9091` و`9092` لعناوين proxy مستقرة.
 
 ## 7. UDP
 

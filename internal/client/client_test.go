@@ -114,6 +114,21 @@ func TestReconnectMessageNeverContainsNilError(t *testing.T) {
 	}
 }
 
+func TestAdaptiveTargetSlotExpandsOnlyOnceAcrossReconnects(t *testing.T) {
+	pool := newTargetPoolReporter(4, nil)
+	expansions := 0
+	pool.onReady = func() { expansions++ }
+	slot := pool.slot(0)
+
+	for range 3 {
+		telemetry.Emit(slot, telemetry.Event{Type: "target_ready"})
+		telemetry.Emit(slot, telemetry.Event{Type: "client_reconnecting"})
+	}
+	if expansions != 1 {
+		t.Fatalf("slot triggered %d adaptive expansions across reconnects, want 1", expansions)
+	}
+}
+
 func TestRunEdgeReportsPeerSessionClosure(t *testing.T) {
 	edgeConn, targetConn := net.Pipe()
 	targetSession, err := yamux.Server(targetConn, yamuxConfig())

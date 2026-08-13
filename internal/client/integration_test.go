@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -145,17 +146,216 @@ func TestThreeEndConcurrentTCPFlow(t *testing.T) {
 	}
 
 	removed := make(map[string]bool, 2)
-	for len(removed) < 2 {
+	for len(removed) < len(peerIDs) {
 		event := waitForClientEvent(t, relayEvents, "relay_peer_disconnected", 5*time.Second)
 		if event.PeerChange == nil || len(event.PeerChange.Peers) != 1 {
 			t.Fatalf("relay disconnect telemetry = %#v", event.PeerChange)
 		}
-		removed[event.PeerChange.Peers[0].ID] = true
+		// Adaptive Target pooling may have a hot-standby session in addition
+		// to the paired Edge/Target. Only the sessions captured from the pair
+		// above are required to disappear during shutdown.
+		if peerIDs[event.PeerChange.Peers[0].ID] {
+			removed[event.PeerChange.Peers[0].ID] = true
+		}
 	}
 	for peerID := range peerIDs {
 		if !removed[peerID] {
 			t.Fatalf("peer %q remained after client shutdown", peerID)
 		}
+	}
+}
+
+func TestAdaptiveTargetHotStandbySurvivesPairTimeout(t *testing.T) {
+	echoAddress, closeEcho := startEchoServer(t)
+	defer closeEcho()
+
+	relayEvents := make(chan telemetry.Event, 32)
+	relayServer := relay.New(relay.Options{
+		Token:       "relay-token-0123456789",
+		PairTimeout: 100 * time.Millisecond,
+		Reporter:    telemetry.ReporterFunc(func(event telemetry.Event) { relayEvents <- event }),
+	})
+	httpServer := httptest.NewServer(relayServer.Handler())
+	defer httpServer.Close()
+	remote := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/session"
+	targetConfig, edgeConfig := testClientConfigs(remote, echoAddress)
+	targetConfig.Tunnel.Pool = 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	targetErrors := make(chan error, 1)
+	edgeErrors := make(chan error, 1)
+	edgeEvents := make(chan telemetry.Event, 16)
+	go func() { targetErrors <- run(ctx, targetConfig, nil, integrationRetrySettings()) }()
+	// Confirm the Target connected, then leave it unmatched beyond the normal
+	// pair timeout before introducing the Edge.
+	connected := waitForClientEvent(t, relayEvents, "relay_peer_connected", 5*time.Second)
+	if connected.PeerChange == nil || len(connected.PeerChange.Peers) != 1 {
+		t.Fatalf("Target connect telemetry = %#v", connected.PeerChange)
+	}
+	standbyID := connected.PeerChange.Peers[0].ID
+	// This also crosses the protocol's 15-second Edge handshake timeout. A
+	// Target standby must remain connected beyond both timeout mechanisms.
+	time.Sleep(16 * time.Second)
+	go func() {
+		edgeErrors <- run(ctx, edgeConfig, telemetry.ReporterFunc(func(event telemetry.Event) {
+			edgeEvents <- event
+		}), integrationRetrySettings())
+	}()
+
+	// Pairing after the timeout proves the Target was retained as hot standby.
+	paired := waitForClientEvent(t, relayEvents, "relay_paired", 5*time.Second)
+	if paired.PeerChange == nil || len(paired.PeerChange.Peers) != 2 {
+		t.Fatalf("relay pair telemetry = %#v", paired.PeerChange)
+	}
+	pairedStandby := false
+	for _, peer := range paired.PeerChange.Peers {
+		if peer.ID == standbyID && peer.Role == "target" {
+			pairedStandby = true
+		}
+	}
+	if !pairedStandby {
+		t.Fatalf("original Target standby %q was replaced before pairing: %#v", standbyID, paired.PeerChange.Peers)
+	}
+	ready := waitForClientEvent(t, edgeEvents, "edge_listening", 5*time.Second)
+	assertEchoRoundTrip(t, ready.Listen, []byte("standby-after-handshake-timeout"))
+	cancel()
+	assertClientStopped(t, targetErrors, "target")
+	assertClientStopped(t, edgeErrors, "edge")
+}
+
+func TestFourEdgesAndTargetsConcurrentTraffic(t *testing.T) {
+	echoAddress, closeEcho := startEchoServer(t)
+	defer closeEcho()
+
+	relayServer := relay.New(relay.Options{Token: "relay-token-0123456789", PairTimeout: 3 * time.Second})
+	httpServer := httptest.NewServer(relayServer.Handler())
+	defer httpServer.Close()
+	remote := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/session"
+	targetConfig, edgeConfig := testClientConfigs(remote, echoAddress)
+	targetConfig.Tunnel.Pool = 4
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errors := make(chan error, 8)
+	edgeAddresses := make(chan string, 4)
+	edgeReporter := telemetry.ReporterFunc(func(event telemetry.Event) {
+		if event.Type == "edge_listening" {
+			edgeAddresses <- event.Listen
+		}
+	})
+	go func() { errors <- run(ctx, targetConfig, nil, integrationRetrySettings()) }()
+	for range 4 {
+		go func() { errors <- run(ctx, edgeConfig, edgeReporter, integrationRetrySettings()) }()
+	}
+
+	addresses := make([]string, 0, 4)
+	for len(addresses) < 4 {
+		select {
+		case address := <-edgeAddresses:
+			addresses = append(addresses, address)
+		case err := <-errors:
+			t.Fatalf("client stopped before all Edges were ready: %v", err)
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for four Edge listeners")
+		}
+	}
+	if len(uniqueStrings(addresses)) != 4 {
+		t.Fatalf("Edge listeners are not independent: %#v", addresses)
+	}
+
+	var workers sync.WaitGroup
+	results := make(chan error, 4)
+	for index, address := range addresses {
+		workers.Add(1)
+		go func(index int, address string) {
+			defer workers.Done()
+			payload := bytes.Repeat([]byte(fmt.Sprintf("edge-%d/", index)), 8192)
+			conn, err := net.DialTimeout("tcp", address, 3*time.Second)
+			if err != nil {
+				results <- err
+				return
+			}
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
+			if _, err := conn.Write(payload); err != nil {
+				results <- err
+				return
+			}
+			received := make([]byte, len(payload))
+			if _, err := io.ReadFull(conn, received); err != nil {
+				results <- err
+				return
+			}
+			if !bytes.Equal(received, payload) {
+				results <- fmt.Errorf("Edge %d payload mismatch", index)
+			}
+		}(index, address)
+	}
+	workers.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	cancel()
+	for range 5 {
+		assertClientStopped(t, errors, "multi-edge client")
+	}
+}
+
+func TestMultipleEdgesRecoverThroughRepeatedNetworkFlaps(t *testing.T) {
+	echoAddress, closeEcho := startEchoServer(t)
+	defer closeEcho()
+
+	relayServer := relay.New(relay.Options{Token: "relay-token-0123456789", PairTimeout: 3 * time.Second})
+	httpServer := httptest.NewServer(relayServer.Handler())
+	defer httpServer.Close()
+	relayURL, err := url.Parse(httpServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := startFaultProxy(t, relayURL.Host, 10*time.Millisecond)
+	defer proxy.Close()
+	remote := "ws://" + proxy.Addr() + "/ws/session"
+	targetConfig, edgeConfig := testClientConfigs(remote, echoAddress)
+	targetConfig.Tunnel.Pool = 3
+	retry := integrationRetrySettings()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errors := make(chan error, 4)
+	edgeEvents := make([]chan telemetry.Event, 3)
+	go func() { errors <- run(ctx, targetConfig, nil, retry) }()
+	for index := range edgeEvents {
+		edgeEvents[index] = make(chan telemetry.Event, 128)
+		reporter := telemetry.ReporterFunc(func(event telemetry.Event) {
+			edgeEvents[index] <- event
+		})
+		go func() { errors <- run(ctx, edgeConfig, reporter, retry) }()
+	}
+
+	addresses := waitForEdgeGeneration(t, edgeEvents, "initial")
+	assertEdgeSetRoundTrips(t, addresses, "initial")
+	for cycle := 1; cycle <= 3; cycle++ {
+		// Fail a few fresh TCP attempts as well as dropping established sockets.
+		// This exercises both abrupt disconnects and short intermittent outages.
+		proxy.FailNextConnections(3)
+		proxy.DropConnections()
+		for index, events := range edgeEvents {
+			event := waitForClientEvent(t, events, "client_reconnecting", 5*time.Second)
+			if !strings.Contains(event.Message, "retry") {
+				t.Fatalf("Edge %d cycle %d reconnect message is not actionable: %q", index, cycle, event.Message)
+			}
+		}
+		addresses = waitForEdgeGeneration(t, edgeEvents, fmt.Sprintf("cycle-%d", cycle))
+		assertEdgeSetRoundTrips(t, addresses, fmt.Sprintf("cycle-%d", cycle))
+	}
+
+	cancel()
+	for range 4 {
+		assertClientStopped(t, errors, "network-flap client")
 	}
 }
 
@@ -481,6 +681,187 @@ func assertClientStopped(t *testing.T, errors <-chan error, name string) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("%s did not stop", name)
+	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func waitForEdgeGeneration(t *testing.T, events []chan telemetry.Event, generation string) []string {
+	t.Helper()
+	addresses := make([]string, len(events))
+	for index, edgeEvents := range events {
+		ready := waitForClientEvent(t, edgeEvents, "edge_listening", 8*time.Second)
+		addresses[index] = ready.Listen
+	}
+	if len(uniqueStrings(addresses)) != len(addresses) {
+		t.Fatalf("%s Edge listeners are not independent: %#v", generation, addresses)
+	}
+	return addresses
+}
+
+func assertEdgeSetRoundTrips(t *testing.T, addresses []string, generation string) {
+	t.Helper()
+	var workers sync.WaitGroup
+	errors := make(chan error, len(addresses))
+	for index, address := range addresses {
+		workers.Add(1)
+		go func(index int, address string) {
+			defer workers.Done()
+			payload := []byte(fmt.Sprintf("%s-edge-%d", generation, index))
+			conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+			if err != nil {
+				errors <- err
+				return
+			}
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(4 * time.Second))
+			if _, err := conn.Write(payload); err != nil {
+				errors <- err
+				return
+			}
+			received := make([]byte, len(payload))
+			if _, err := io.ReadFull(conn, received); err != nil {
+				errors <- err
+				return
+			}
+			if !bytes.Equal(received, payload) {
+				errors <- fmt.Errorf("%s Edge %d payload mismatch", generation, index)
+			}
+		}(index, address)
+	}
+	workers.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+type faultProxy struct {
+	listener net.Listener
+	upstream string
+	delay    time.Duration
+
+	mu       sync.Mutex
+	active   map[net.Conn]struct{}
+	failNext int
+	done     chan struct{}
+}
+
+func startFaultProxy(t *testing.T, upstream string, delay time.Duration) *faultProxy {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := &faultProxy{
+		listener: listener,
+		upstream: upstream,
+		delay:    delay,
+		active:   make(map[net.Conn]struct{}),
+		done:     make(chan struct{}),
+	}
+	go proxy.serve()
+	return proxy
+}
+
+func (p *faultProxy) Addr() string {
+	return p.listener.Addr().String()
+}
+
+func (p *faultProxy) FailNextConnections(count int) {
+	p.mu.Lock()
+	p.failNext += count
+	p.mu.Unlock()
+}
+
+func (p *faultProxy) DropConnections() {
+	p.mu.Lock()
+	connections := make([]net.Conn, 0, len(p.active))
+	for conn := range p.active {
+		connections = append(connections, conn)
+	}
+	p.mu.Unlock()
+	for _, conn := range connections {
+		_ = conn.Close()
+	}
+}
+
+func (p *faultProxy) Close() {
+	_ = p.listener.Close()
+	p.DropConnections()
+	<-p.done
+}
+
+func (p *faultProxy) serve() {
+	defer close(p.done)
+	for {
+		downstream, err := p.listener.Accept()
+		if err != nil {
+			return
+		}
+		p.mu.Lock()
+		fail := p.failNext > 0
+		if fail {
+			p.failNext--
+		}
+		p.mu.Unlock()
+		if fail {
+			_ = downstream.Close()
+			continue
+		}
+		upstream, err := net.DialTimeout("tcp", p.upstream, time.Second)
+		if err != nil {
+			_ = downstream.Close()
+			continue
+		}
+		p.track(downstream, upstream)
+		go p.pipe(upstream, downstream)
+		go p.pipe(downstream, upstream)
+	}
+}
+
+func (p *faultProxy) track(connections ...net.Conn) {
+	p.mu.Lock()
+	for _, conn := range connections {
+		p.active[conn] = struct{}{}
+	}
+	p.mu.Unlock()
+}
+
+func (p *faultProxy) pipe(dst, src net.Conn) {
+	buffer := make([]byte, 16<<10)
+	for {
+		read, err := src.Read(buffer)
+		if read > 0 {
+			if p.delay > 0 {
+				time.Sleep(p.delay)
+			}
+			if _, writeErr := dst.Write(buffer[:read]); writeErr != nil {
+				err = writeErr
+			}
+		}
+		if err != nil {
+			_ = src.Close()
+			_ = dst.Close()
+			p.mu.Lock()
+			delete(p.active, src)
+			delete(p.active, dst)
+			p.mu.Unlock()
+			return
+		}
 	}
 }
 

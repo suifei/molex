@@ -79,7 +79,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-go build -trimpath -ldflags "-s -w -X main.version=0.3.0" -o bin/molex .
+go build -trimpath -ldflags "-s -w -X main.version=0.3.1" -o bin/molex .
 ```
 
 Windows 可把输出改为 `bin/molex.exe`。发布包用户只需一个对应平台的 MoleX 二进制。
@@ -215,7 +215,7 @@ molex web --config target.json --password-file ./web-password --autostart
 molex web --config edge.json   --password-file ./web-password --autostart
 ```
 
-每条命令在对应机器运行。管理页面默认位于 `http://127.0.0.1:9090`，只允许回环监听。远程管理使用 SSH 转发：
+每条命令在对应机器运行。管理页面优先使用 `http://127.0.0.1:9090`；若端口被占用，MoleX 会自动向后选择可用回环端口，在终端打印实际地址，并在监听成功后打开默认浏览器。服务器、SSH 转发和反向代理部署请使用 `--listen 127.0.0.1:9090 --open-browser=false` 固定地址。管理监听始终只允许回环地址。远程管理使用 SSH 转发：
 
 ```bash
 ssh -N -L 9090:127.0.0.1:9090 user@molex-host
@@ -396,7 +396,7 @@ postgres: channel=home-pg       edge=127.0.0.1:15432
 api:      channel=internal-api  edge=127.0.0.1:18080
 ```
 
-所有进程仍连接同一个 `wss://molex.example.com/ws/session`，公网依旧只使用 Caddy 的 `443/tcp`。如果每个进程都启用 WebUI，必须给管理监听分配不同的回环端口，例如 `9090`、`9091`、`9092`。
+所有进程仍连接同一个 `wss://molex.example.com/ws/session`，公网依旧只使用 Caddy 的 `443/tcp`。同机启动多个 WebUI 时，默认监听会从 `9090` 开始自动选择不同的回环端口；需要稳定的 SSH 转发或反向代理地址时，应分别显式指定 `9090`、`9091`、`9092`。
 
 ## 7. UDP 现状与替代方案
 

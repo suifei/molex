@@ -126,7 +126,7 @@ molex web --config target.json --password-file ./web-password --autostart
 molex web --config edge.json   --password-file ./web-password --autostart
 ```
 
-관리 UI는 loopback `127.0.0.1:9090`에서만 수신합니다. 원격 관리에는 SSH forwarding을 사용합니다.
+WebUI는 `127.0.0.1:9090`을 우선 사용하고, 점유 중이면 빈 loopback port를 자동 선택한 뒤 준비되면 기본 브라우저를 엽니다. 서버, SSH 또는 reverse proxy에서는 `--listen 127.0.0.1:9090 --open-browser=false`로 고정하십시오. 원격 관리에는 SSH forwarding을 사용합니다.
 
 ```bash
 ssh -N -L 9090:127.0.0.1:9090 user@molex-host
@@ -182,7 +182,7 @@ curl --connect-to api.openai.com:443:127.0.0.1:18443 \
 
 ### 여러 서비스
 
-client process 하나가 route 하나를 관리합니다. SSH, DB, API마다 config, channel, Edge port, process를 분리하십시오. 모두 `wss://molex.example.com/ws/session`을 공유할 수 있어 공개 포트는 계속 `443/tcp` 하나입니다. 여러 WebUI는 `9090`, `9091`, `9092`처럼 서로 다른 loopback port를 사용해야 합니다.
+client process 하나가 route 하나를 관리합니다. SSH, DB, API마다 config, channel, Edge port, process를 분리하십시오. 모두 `wss://molex.example.com/ws/session`을 공유할 수 있어 공개 포트는 계속 `443/tcp` 하나입니다. 여러 WebUI는 서로 다른 loopback port를 자동 선택합니다. 안정적인 proxy 주소에는 `9090`, `9091`, `9092`를 명시하십시오.
 
 ## 7. UDP
 

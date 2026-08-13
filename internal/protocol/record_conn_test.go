@@ -60,6 +60,50 @@ func TestRecordConnectionEncryptsAndAuthenticates(t *testing.T) {
 	}
 }
 
+func TestOpenSecureClientCancellationInterruptsPeerHello(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	connected := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		connected <- conn
+	}))
+	defer server.Close()
+	defer server.CloseClientConnections()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := OpenSecureClient(ctx, ws, []byte("cancel-secret"), "cancel-channel", RoleTarget)
+		result <- err
+	}()
+
+	select {
+	case <-connected:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for WebSocket connection")
+	}
+	cancel()
+
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("expected handshake cancellation error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handshake did not stop after context cancellation")
+	}
+}
+
 func drainObservedFrames(frames <-chan observedFrame) {
 	for {
 		select {

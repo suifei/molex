@@ -30,6 +30,7 @@ func newRootCommand(version string) *cobra.Command {
 				configPath:   filepath.Join(stateDirectory, "MoleX", "molex.json"),
 				passwordFile: filepath.Join(stateDirectory, "MoleX", "web-password"),
 				listen:       "127.0.0.1:9090",
+				autoListen:   true,
 				openBrowser:  true,
 				loggerOutput: cmd.ErrOrStderr(),
 			})

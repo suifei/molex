@@ -30,6 +30,7 @@ func newWebCommand() *cobra.Command {
 				configPath:   configPath,
 				passwordFile: passwordFile,
 				listen:       listen,
+				autoListen:   !cmd.Flags().Changed("listen"),
 				autoStart:    autoStart,
 				openBrowser:  openBrowser,
 				loggerOutput: cmd.ErrOrStderr(),
@@ -37,10 +38,10 @@ func newWebCommand() *cobra.Command {
 		},
 	}
 	command.Flags().StringVarP(&configPath, "config", "c", "molex.json", "configuration file managed by the web console")
-	command.Flags().StringVar(&listen, "listen", "127.0.0.1:9090", "loopback address for the web console")
+	command.Flags().StringVar(&listen, "listen", "127.0.0.1:9090", "loopback address for the web console (automatically advances if the default port is busy)")
 	command.Flags().StringVar(&passwordFile, "password-file", "", "file containing the web login password")
 	command.Flags().BoolVar(&autoStart, "autostart", false, "start the configured relay or client with the web console")
-	command.Flags().BoolVar(&openBrowser, "open-browser", false, "open the web console in the default browser")
+	command.Flags().BoolVar(&openBrowser, "open-browser", true, "open the web console in the default browser after it starts")
 	command.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return fmt.Errorf("web flags: %w", err) })
 	return command
 }
@@ -49,6 +50,7 @@ type webRunOptions struct {
 	configPath   string
 	passwordFile string
 	listen       string
+	autoListen   bool
 	autoStart    bool
 	openBrowser  bool
 	loggerOutput io.Writer
@@ -62,6 +64,7 @@ func runWeb(ctx context.Context, options webRunOptions) error {
 	logger := slog.New(slog.NewTextHandler(options.loggerOutput, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	server, err := webui.New(webui.Options{
 		Listen:            options.listen,
+		AutoListen:        options.autoListen,
 		ConfigPath:        options.configPath,
 		Password:          password,
 		SetupPasswordPath: setupPasswordPath,
