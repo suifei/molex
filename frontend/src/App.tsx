@@ -1037,7 +1037,7 @@ function ServicesEditor({ locale, services, groupNames, statuses, onSaved, onErr
                       const checked = !service.groups?.length || service.groups.includes(group);
                       return (
                         <label key={group}>
-                          <input type="checkbox" checked={checked} onChange={() => toggleGroup(index, group)} />
+                          <input type="checkbox" checked={checked} onChange={() => toggleGroup(index, group)} aria-label={group} />
                           <span>{group}</span>
                         </label>
                       );

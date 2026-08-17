@@ -340,7 +340,9 @@ describe("multi-group consoles", () => {
     await screen.findByRole("heading", { name: "Connection" });
     expect(screen.getByText("Visible to")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: "lab" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save services" }));
+    const save = screen.getByRole("button", { name: "Save services" });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
     await waitFor(() => expect(saveServices).toHaveBeenCalledWith([
       { id: "svc-web", name: "web", address: "10.188.200.16:30927", groups: ["office"] },
     ]));
