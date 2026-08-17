@@ -135,6 +135,51 @@ func TestStaleRuntimePeerEventsAreIgnoredAfterRestart(t *testing.T) {
 	}
 }
 
+func TestEventPayloadsReplaceRoleStatus(t *testing.T) {
+	manager := NewManager(nil, nil)
+
+	manager.recordEvent(telemetry.Event{
+		Type: "edge_catalog",
+		Catalog: &telemetry.CatalogUpdate{
+			Online:   true,
+			Services: []telemetry.CatalogService{{ID: "svc-1", Name: "web", Address: "10.0.0.5:80"}},
+		},
+		Mappings: []telemetry.MappingStatus{{
+			Service: "svc-1",
+			State:   telemetry.MappingStateListening,
+			Listen:  "127.0.0.1:28080",
+		}},
+	})
+	status := manager.Status()
+	if status.Catalog == nil || !status.Catalog.Online || len(status.Catalog.Services) != 1 {
+		t.Fatalf("catalog status = %#v", status.Catalog)
+	}
+	if len(status.Mappings) != 1 || status.Mappings[0].State != telemetry.MappingStateListening {
+		t.Fatalf("mapping status = %#v", status.Mappings)
+	}
+	status.Catalog.Services[0].Name = "mutated"
+	status.Mappings[0].State = "mutated"
+	fresh := manager.Status()
+	if fresh.Catalog.Services[0].Name != "web" || fresh.Mappings[0].State != telemetry.MappingStateListening {
+		t.Fatal("Status returned mutable catalog or mapping state")
+	}
+
+	manager.recordEvent(telemetry.Event{
+		Type:      "target_services",
+		Transient: true,
+		Services: []telemetry.ServiceStatus{{
+			ID: "svc-1", Name: "web", Address: "10.0.0.5:80", Streams: 3,
+		}},
+	})
+	status = manager.Status()
+	if len(status.Services) != 1 || status.Services[0].Streams != 3 {
+		t.Fatalf("service status = %#v", status.Services)
+	}
+	if events := manager.Events(); len(events) != 1 {
+		t.Fatalf("transient service stats polluted the activity log: %d events", len(events))
+	}
+}
+
 func TestLateTransientPeerStatsCannotResurrectDisconnectedPeer(t *testing.T) {
 	manager := NewManager(nil, nil)
 	peer := telemetry.Peer{

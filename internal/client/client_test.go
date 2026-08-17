@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
 	"github.com/suifei/molex/internal/config"
+	"github.com/suifei/molex/internal/protocol"
+	"github.com/suifei/molex/internal/relay"
 	"github.com/suifei/molex/internal/telemetry"
 )
 
@@ -81,16 +84,21 @@ func TestClientErrorGuidance(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"authentication", &relayHTTPError{statusCode: 401, status: "401 Unauthorized", err: errors.New("bad handshake")}, "relay token"},
+		{"unknown token", &relayHTTPError{statusCode: 401, status: "401 Unauthorized", err: errors.New("bad handshake")}, "Copy a valid token"},
+		{"disabled token", &relayHTTPError{statusCode: 403, status: "403 Forbidden", err: errors.New("bad handshake")}, "token is disabled"},
 		{"route", &relayHTTPError{statusCode: 404, status: "404 Not Found", err: errors.New("bad handshake")}, "/ws/session"},
 		{"gateway", &relayHTTPError{statusCode: 502, status: "502 Bad Gateway", err: errors.New("bad handshake")}, "Caddy's upstream"},
 		{"dns", &net.DNSError{Name: "relay.invalid", Err: "no such host"}, "DNS settings"},
 		{"refused", syscall.ECONNREFUSED, "check the firewall"},
 		{"tls", errors.New("tls: failed to verify certificate: x509: certificate signed by unknown authority"), "system time"},
 		{"timeout", context.DeadlineExceeded, "network reachability"},
-		{"pair", errors.New("receive peer hello: websocket: close 1013: pair timeout"), "Start the other client"},
+		{"pair", errors.New("receive peer hello: websocket: close 1013: pair timeout"), "Start the Target"},
 		{"session unavailable", errors.New("websocket: close 1008: session unavailable"), "relay route"},
-		{"handshake", errors.New("peer authentication failed"), "same channel and secret"},
+		{"route mismatch", errors.New("websocket: close 1008: session route does not match the presented token"), "exact same token"},
+		{"handshake", errors.New("peer authentication failed"), "same token"},
+		{"duplicate target", &websocket.CloseError{Code: relay.CloseDuplicateTarget, Text: "another target is already connected for this token"}, "exactly one Target"},
+		{"token revoked", &websocket.CloseError{Code: relay.CloseTokenDisabled, Text: "token disabled by relay administrator"}, "disabled this token"},
+		{"kicked", &websocket.CloseError{Code: relay.CloseKicked, Text: "disconnected by relay administrator"}, "reconnects automatically"},
 		{"listener", &localListenError{address: "127.0.0.1:2222", err: syscall.EADDRINUSE}, "Stop the process using that address"},
 		{"closed", errSessionClosed, "Retry the local connection"},
 	}
@@ -129,7 +137,9 @@ func TestAdaptiveTargetSlotExpandsOnlyOnceAcrossReconnects(t *testing.T) {
 	}
 }
 
-func TestRunEdgeReportsPeerSessionClosure(t *testing.T) {
+// TestEdgeSessionReceivesCatalogOpensMappingAndDetectsClosure drives one
+// edge session over an in-memory pipe against a scripted target.
+func TestEdgeSessionReceivesCatalogOpensMappingAndDetectsClosure(t *testing.T) {
 	edgeConn, targetConn := net.Pipe()
 	targetSession, err := yamux.Server(targetConn, yamuxConfig())
 	if err != nil {
@@ -137,25 +147,73 @@ func TestRunEdgeReportsPeerSessionClosure(t *testing.T) {
 	}
 	defer targetSession.Close()
 
-	ready := make(chan struct{}, 1)
-	reporter := telemetry.ReporterFunc(func(event telemetry.Event) {
-		if event.Type == "edge_listening" {
-			ready <- struct{}{}
-		}
-	})
+	events := make(chan telemetry.Event, 256)
+	reporter := telemetry.ReporterFunc(func(event telemetry.Event) { events <- event })
+	port := freeLoopbackPort(t)
+	rt := newEdgeRuntime(config.Config{
+		Mappings: []config.MappingEntry{{Service: "svc-1", Port: port}},
+	}, reporter)
+	defer rt.shutdown()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- runEdge(ctx, config.Config{Listen: "127.0.0.1:0"}, edgeConn, reporter)
+		done <- rt.runSession(ctx, edgeConn, reporter, "")
 	}()
 
+	waitForClientEvent(t, events, "edge_route_ready", 3*time.Second)
+
+	control, err := targetSession.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := protocol.WriteControlHeader(control); err != nil {
+		t.Fatal(err)
+	}
+	if err := protocol.WriteCatalog(control, protocol.CatalogMessage{Services: []protocol.CatalogService{
+		{ID: "svc-1", Name: "unit-echo", Address: "127.0.0.1:1"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	status := waitForMappingState(t, events, "svc-1", telemetry.MappingStateListening, 3*time.Second)
+	if status.ServiceName != "unit-echo" || status.Listen == "" {
+		t.Fatalf("listening mapping = %#v", status)
+	}
+
+	// A local connection must produce a data stream whose preamble carries
+	// the mapped service id.
+	accepted := make(chan string, 1)
+	go func() {
+		stream, err := targetSession.AcceptStream()
+		if err != nil {
+			return
+		}
+		defer stream.Close()
+		kind, err := protocol.ReadTunnelStreamKind(stream)
+		if err != nil || kind != protocol.TunnelStreamData {
+			return
+		}
+		id, err := protocol.ReadDataPreamble(stream)
+		if err != nil {
+			return
+		}
+		_ = protocol.WriteDialStatus(stream, protocol.TunnelDialUnknown)
+		accepted <- id
+	}()
+	local, err := net.DialTimeout("tcp", status.Listen, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Close()
 	select {
-	case <-ready:
-	case err := <-done:
-		t.Fatalf("edge stopped before listening: %v", err)
+	case id := <-accepted:
+		if id != "svc-1" {
+			t.Fatalf("preamble service id = %q", id)
+		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for edge listener")
+		t.Fatal("target never received the data stream preamble")
 	}
 
 	if err := targetSession.Close(); err != nil {
@@ -168,5 +226,9 @@ func TestRunEdgeReportsPeerSessionClosure(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("edge did not detect the closed peer session")
+	}
+	status = waitForMappingState(t, events, "svc-1", telemetry.MappingStateWaiting, 3*time.Second)
+	if status.State != telemetry.MappingStateWaiting {
+		t.Fatalf("mapping after closure = %#v", status)
 	}
 }

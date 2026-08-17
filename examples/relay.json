@@ -1,6 +1,11 @@
 {
   "mode": "relay",
-  "token": "mx1_replace-with-the-relay-token",
   "listen": "127.0.0.1:8080",
-  "tunnel": {}
+  "tokens": [
+    {
+      "id": "tok-example",
+      "token": "mx2_replace-with-a-generated-token",
+      "note": "example-group"
+    }
+  ]
 }

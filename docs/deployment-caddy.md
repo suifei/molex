@@ -84,6 +84,10 @@ Do not add wildcard CORS headers. MoleX clients are native WebSocket clients, an
 
 The optional relay token is sent in the data-plane `Authorization` header and is visible to Caddy after TLS termination. It controls relay admission only and is not used for payload encryption. The Web management password is a separate credential.
 
+## Relay keep-alive
+
+Prefer systemd on Linux. The unit below keeps the Web console and data plane together. A data-plane-only unit lives at `deploy/molex-relay.service` (`Restart=always`). On hosts without systemd, run `deploy/molex-keepalive.sh` as a POSIX watchdog around `molex serve`.
+
 ## systemd unit
 
 ```ini

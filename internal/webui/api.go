@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/suifei/molex/internal/config"
+	"github.com/suifei/molex/internal/telemetry"
 )
 
 type validationResult struct {
@@ -26,6 +28,9 @@ type sessionResponse struct {
 	Authenticated bool   `json:"authenticated"`
 	SetupRequired bool   `json:"setupRequired,omitempty"`
 	CSRFToken     string `json:"csrfToken,omitempty"`
+	Mode          string `json:"mode"`
+	ModeLocked    bool   `json:"modeLocked"`
+	AuthRequired  bool   `json:"authRequired"`
 }
 
 type loginRequest struct {
@@ -34,6 +39,31 @@ type loginRequest struct {
 
 type setupRequest struct {
 	Password string `json:"password"`
+}
+
+type bootstrapRequest struct {
+	Mode string `json:"mode"`
+}
+
+type tokenCreateRequest struct {
+	Note string `json:"note"`
+}
+
+type tokenUpdateRequest struct {
+	Note     *string `json:"note"`
+	Disabled *bool   `json:"disabled"`
+}
+
+type tokenRotateRequest struct {
+	GraceDays int `json:"graceDays"`
+}
+
+type disconnectRequest struct {
+	ID string `json:"id"`
+}
+
+type freePortRequest struct {
+	LAN bool `json:"lan"`
 }
 
 type errorResponse struct {
@@ -45,12 +75,68 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	session, ok := s.sessionFromRequest(r)
-	if !ok {
-		writeJSON(w, http.StatusOK, sessionResponse{Authenticated: false, SetupRequired: s.requiresSetup()})
+	mode := s.consoleMode()
+	if !s.relayConsole() {
+		writeJSON(w, http.StatusOK, sessionResponse{
+			Authenticated: true,
+			CSRFToken:     s.bootCSRF,
+			Mode:          mode,
+			ModeLocked:    s.consoleModeLocked(),
+			AuthRequired:  false,
+		})
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionResponse{Authenticated: true, CSRFToken: session.csrf})
+	session, ok := s.sessionFromRequest(r)
+	if !ok {
+		writeJSON(w, http.StatusOK, sessionResponse{
+			Authenticated: false,
+			SetupRequired: s.requiresSetup(),
+			Mode:          mode,
+			ModeLocked:    true,
+			AuthRequired:  true,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionResponse{
+		Authenticated: true,
+		CSRFToken:     session.csrf,
+		Mode:          mode,
+		ModeLocked:    true,
+		AuthRequired:  true,
+	})
+}
+
+// handleBootstrap locks a fresh console to the target or edge role chosen in
+// the browser. Relay consoles are created from the CLI so their password
+// requirement is never skipped.
+func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if s.relayConsole() {
+		writeError(w, http.StatusConflict, "the console role is already configured")
+		return
+	}
+	if !s.requireMutation(w, r) {
+		return
+	}
+	var input bootstrapRequest
+	if err := decodeJSON(r, &input, 4096); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.lockConsoleMode(strings.ToLower(strings.TrimSpace(input.Mode))); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionResponse{
+		Authenticated: true,
+		CSRFToken:     s.bootCSRF,
+		Mode:          s.consoleMode(),
+		ModeLocked:    true,
+		AuthRequired:  false,
+	})
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +183,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setSessionCookie(w, r, token, session.expires, s.options.SessionTTL)
-	writeJSON(w, http.StatusOK, sessionResponse{Authenticated: true, CSRFToken: session.csrf})
+	writeJSON(w, http.StatusOK, sessionResponse{Authenticated: true, CSRFToken: session.csrf, Mode: s.consoleMode(), ModeLocked: true, AuthRequired: true})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +222,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.loginLimiter.success(client)
 	setSessionCookie(w, r, token, session.expires, s.options.SessionTTL)
-	writeJSON(w, http.StatusOK, sessionResponse{Authenticated: true, CSRFToken: session.csrf})
+	writeJSON(w, http.StatusOK, sessionResponse{Authenticated: true, CSRFToken: session.csrf, Mode: s.consoleMode(), ModeLocked: true, AuthRequired: true})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +230,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
-	if !requireCSRF(w, r) {
+	if !s.requireMutation(w, r) {
 		return
 	}
 	session, _ := sessionFromContext(r.Context())
@@ -161,9 +247,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if cfg.Mode != s.consoleMode() {
+			cfg.Mode = s.consoleMode()
+		}
 		writeJSON(w, http.StatusOK, cfg)
 	case http.MethodPut:
-		if !requireCSRF(w, r) {
+		if !s.requireMutation(w, r) {
 			return
 		}
 		var cfg config.Config
@@ -172,12 +261,17 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cfg = cfg.Normalized()
-		if err := cfg.Validate(); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		if cfg.Mode != s.consoleMode() {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("this console manages a %q configuration; recreate the file with `molex config init` to change roles", s.consoleMode()))
 			return
 		}
 		s.actionMu.Lock()
 		defer s.actionMu.Unlock()
+		cfg = s.mergeManagedLists(cfg)
+		if err := cfg.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if s.manager.Running() {
 			writeError(w, http.StatusConflict, "stop MoleX before changing its configuration")
 			return
@@ -192,12 +286,32 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// mergeManagedLists keeps the list sections owned by their dedicated
+// endpoints (/api/tokens, /api/services, /api/mappings) authoritative on
+// disk, so a stale browser configuration can never wipe them through the
+// generic save or start endpoints. Callers must hold actionMu.
+func (s *Server) mergeManagedLists(cfg config.Config) config.Config {
+	current, err := config.LoadOptional(s.options.ConfigPath)
+	if err != nil {
+		return cfg
+	}
+	switch s.consoleMode() {
+	case config.ModeRelay:
+		cfg.Tokens = current.Tokens
+	case config.ModeTarget:
+		cfg.Services = current.Services
+	case config.ModeEdge:
+		cfg.Mappings = current.Mappings
+	}
+	return cfg
+}
+
 func (s *Server) handleValidateConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
-	if !requireCSRF(w, r) {
+	if !s.requireMutation(w, r) {
 		return
 	}
 	var cfg config.Config
@@ -217,7 +331,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
-	if !requireCSRF(w, r) {
+	if !s.requireMutation(w, r) {
 		return
 	}
 	var cfg config.Config
@@ -226,13 +340,18 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg = cfg.Normalized()
-	if err := cfg.Validate(); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if cfg.Mode != s.consoleMode() {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("this console manages a %q configuration; recreate the file with `molex config init` to change roles", s.consoleMode()))
 		return
 	}
 
 	s.actionMu.Lock()
 	defer s.actionMu.Unlock()
+	cfg = s.mergeManagedLists(cfg)
+	if err := cfg.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if s.manager.Running() {
 		writeError(w, http.StatusConflict, "MoleX is already running")
 		return
@@ -253,7 +372,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
-	if !requireCSRF(w, r) {
+	if !s.requireMutation(w, r) {
 		return
 	}
 	s.actionMu.Lock()
@@ -293,7 +412,7 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "event streaming is unavailable")
 		return
 	}
-	session, _ := sessionFromContext(r.Context())
+	session, hasSession := sessionFromContext(r.Context())
 	events, unsubscribe := s.subscribe()
 	defer unsubscribe()
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -318,7 +437,7 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 			}
 			flusher.Flush()
 		case <-heartbeat.C:
-			if !s.sessions.valid(session.key) {
+			if s.relayConsole() && hasSession && !s.sessions.valid(session.key) {
 				return
 			}
 			if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
@@ -329,20 +448,425 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleGenerateSecret(w http.ResponseWriter, r *http.Request) {
+// handleTokens lists and creates relay access tokens. Token values stay
+// visible to the authenticated relay operator by design (decision 2 of the
+// v2 plan); the UI masks them until the operator reveals or copies them.
+func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		cfg, err := config.LoadOptional(s.options.ConfigPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		tokens := cfg.Tokens
+		if tokens == nil {
+			tokens = []config.TokenEntry{}
+		}
+		writeJSON(w, http.StatusOK, tokens)
+	case http.MethodPost:
+		if !s.requireMutation(w, r) {
+			return
+		}
+		var input tokenCreateRequest
+		if err := decodeJSON(r, &input, 4096); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		value, err := config.GenerateToken()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		id, err := config.GenerateID("tok")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		entry := config.TokenEntry{
+			ID:        id,
+			Token:     value,
+			Note:      strings.TrimSpace(input.Note),
+			CreatedAt: time.Now().UTC(),
+		}
+
+		s.actionMu.Lock()
+		defer s.actionMu.Unlock()
+		cfg, err := config.LoadOptional(s.options.ConfigPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		cfg.Mode = config.ModeRelay
+		cfg.Tokens = append(cfg.Tokens, entry)
+		if err := cfg.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := config.Save(s.options.ConfigPath, cfg); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.manager.UpdateTokens(cfg.Tokens)
+		s.manager.RecordAudit(telemetry.Event{
+			Type:    "token_created",
+			Level:   "info",
+			Message: fmt.Sprintf("Token %s was created", entry.ID),
+		})
+		writeJSON(w, http.StatusCreated, entry)
+	default:
+		methodNotAllowed(w, http.MethodGet, http.MethodPost)
+	}
+}
+
+func (s *Server) handleTokenItem(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/tokens/")
+	if rotateID, ok := strings.CutSuffix(id, "/rotate"); ok {
+		s.handleTokenRotate(w, r, rotateID)
+		return
+	}
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, http.StatusNotFound, "token not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		if !s.requireMutation(w, r) {
+			return
+		}
+		var input tokenUpdateRequest
+		if err := decodeJSON(r, &input, 4096); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.actionMu.Lock()
+		defer s.actionMu.Unlock()
+		cfg, err := config.LoadOptional(s.options.ConfigPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		index := -1
+		for i, token := range cfg.Tokens {
+			if token.ID == id {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			writeError(w, http.StatusNotFound, "token not found")
+			return
+		}
+		if input.Note != nil {
+			cfg.Tokens[index].Note = strings.TrimSpace(*input.Note)
+		}
+		if input.Disabled != nil {
+			cfg.Tokens[index].Disabled = *input.Disabled
+		}
+		if err := cfg.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := config.Save(s.options.ConfigPath, cfg); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.manager.UpdateTokens(cfg.Tokens)
+		if input.Disabled != nil {
+			action := "token_enabled"
+			if *input.Disabled {
+				action = "token_disabled"
+			}
+			s.manager.RecordAudit(telemetry.Event{
+				Type:    action,
+				Level:   "warning",
+				Message: fmt.Sprintf("Token %s was %s", id, strings.TrimPrefix(action, "token_")),
+			})
+		}
+		writeJSON(w, http.StatusOK, cfg.Tokens[index])
+	case http.MethodDelete:
+		if !s.requireMutation(w, r) {
+			return
+		}
+		s.actionMu.Lock()
+		defer s.actionMu.Unlock()
+		cfg, err := config.LoadOptional(s.options.ConfigPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		kept := cfg.Tokens[:0]
+		found := false
+		for _, token := range cfg.Tokens {
+			if token.ID == id {
+				found = true
+				continue
+			}
+			kept = append(kept, token)
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "token not found")
+			return
+		}
+		cfg.Tokens = kept
+		if err := config.Save(s.options.ConfigPath, cfg); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.manager.UpdateTokens(cfg.Tokens)
+		s.manager.RecordAudit(telemetry.Event{
+			Type:    "token_deleted",
+			Level:   "warning",
+			Message: fmt.Sprintf("Token %s was deleted", id),
+		})
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		methodNotAllowed(w, http.MethodPut, http.MethodDelete)
+	}
+}
+
+// handleTokenRotate issues a fresh token value while keeping the previous
+// one valid through a grace window, so a group migrates without downtime.
+func (s *Server) handleTokenRotate(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
-	if !requireCSRF(w, r) {
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, http.StatusNotFound, "token not found")
 		return
 	}
-	secret, err := config.GenerateSecret()
+	if !s.requireMutation(w, r) {
+		return
+	}
+	var input tokenRotateRequest
+	if err := decodeJSON(r, &input, 4096); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	graceDays := input.GraceDays
+	if graceDays == 0 {
+		graceDays = 3
+	}
+	if graceDays < 1 || graceDays > 30 {
+		writeError(w, http.StatusBadRequest, "graceDays must be between 1 and 30")
+		return
+	}
+	value, err := config.GenerateToken()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"secret": secret})
+
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
+	cfg, err := config.LoadOptional(s.options.ConfigPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	index := -1
+	for i, token := range cfg.Tokens {
+		if token.ID == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		writeError(w, http.StatusNotFound, "token not found")
+		return
+	}
+	expires := time.Now().UTC().Add(time.Duration(graceDays) * 24 * time.Hour)
+	cfg.Tokens[index].PreviousToken = cfg.Tokens[index].Token
+	cfg.Tokens[index].PreviousExpiresAt = expires
+	cfg.Tokens[index].Token = value
+	if err := cfg.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := config.Save(s.options.ConfigPath, cfg); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.manager.UpdateTokens(cfg.Tokens)
+	s.manager.RecordAudit(telemetry.Event{
+		Type:    "token_rotated",
+		Level:   "warning",
+		Message: fmt.Sprintf("Token %s was rotated; the previous value stays valid until %s", id, expires.Format(time.RFC3339)),
+	})
+	writeJSON(w, http.StatusOK, cfg.Tokens[index])
+}
+
+func (s *Server) handleDisconnectPeer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if !s.requireMutation(w, r) {
+		return
+	}
+	var input disconnectRequest
+	if err := decodeJSON(r, &input, 4096); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(input.ID) == "" {
+		writeError(w, http.StatusBadRequest, "peer id is required")
+		return
+	}
+	if !s.manager.DisconnectPeer(strings.TrimSpace(input.ID)) {
+		writeError(w, http.StatusNotFound, "peer not found or the relay is not running")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleServices replaces the target's published service list and applies
+// it to the running client immediately.
+func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		cfg, err := config.LoadOptional(s.options.ConfigPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		services := cfg.Services
+		if services == nil {
+			services = []config.ServiceEntry{}
+		}
+		writeJSON(w, http.StatusOK, services)
+	case http.MethodPut:
+		if !s.requireMutation(w, r) {
+			return
+		}
+		var services []config.ServiceEntry
+		if err := decodeJSON(r, &services, 1<<20); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		for index := range services {
+			if strings.TrimSpace(services[index].ID) == "" {
+				id, err := config.GenerateID("svc")
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				services[index].ID = id
+			}
+		}
+
+		s.actionMu.Lock()
+		defer s.actionMu.Unlock()
+		cfg, err := config.LoadOptional(s.options.ConfigPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		cfg.Mode = config.ModeTarget
+		cfg.Services = services
+		cfg = cfg.Normalized()
+		if err := cfg.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := config.Save(s.options.ConfigPath, cfg); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.manager.UpdateServices(cfg.Services)
+		writeJSON(w, http.StatusOK, cfg.Services)
+	default:
+		methodNotAllowed(w, http.MethodGet, http.MethodPut)
+	}
+}
+
+// handleMappings replaces the edge's local mappings and applies them to the
+// running client immediately.
+func (s *Server) handleMappings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		cfg, err := config.LoadOptional(s.options.ConfigPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		mappings := cfg.Mappings
+		if mappings == nil {
+			mappings = []config.MappingEntry{}
+		}
+		writeJSON(w, http.StatusOK, mappings)
+	case http.MethodPut:
+		if !s.requireMutation(w, r) {
+			return
+		}
+		var mappings []config.MappingEntry
+		if err := decodeJSON(r, &mappings, 1<<20); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		s.actionMu.Lock()
+		defer s.actionMu.Unlock()
+		cfg, err := config.LoadOptional(s.options.ConfigPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		cfg.Mode = config.ModeEdge
+		cfg.Mappings = mappings
+		cfg = cfg.Normalized()
+		if err := cfg.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := config.Save(s.options.ConfigPath, cfg); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.manager.UpdateMappings(cfg.Mappings)
+		writeJSON(w, http.StatusOK, cfg.Mappings)
+	default:
+		methodNotAllowed(w, http.MethodGet, http.MethodPut)
+	}
+}
+
+// handleFreePort suggests an available local port for a new mapping.
+func (s *Server) handleFreePort(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if !s.requireMutation(w, r) {
+		return
+	}
+	var input freePortRequest
+	if err := decodeJSON(r, &input, 4096); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	host := "127.0.0.1"
+	if input.LAN {
+		host = "0.0.0.0"
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not find a free local port: "+err.Error())
+		return
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	_, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not find a free local port")
+		return
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not find a free local port")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"port": port})
 }
 
 func decodeJSON(r *http.Request, destination any, limit int64) error {

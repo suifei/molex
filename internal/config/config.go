@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,59 +15,91 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
 
 const (
-	ModeRelay = "relay"
-	ModePunch = "punch"
-
-	RoleEdge   = "edge"
-	RoleTarget = "target"
+	ModeRelay  = "relay"
+	ModeTarget = "target"
+	ModeEdge   = "edge"
 
 	DefaultWebSocketPath = "/ws/session"
-	DefaultTargetPool    = 0
-	MaxTargetPool        = 65535
+
+	MinTokenLength = 16
+	MaxServices    = 256
+	MaxMappings    = 256
+	MaxTokens      = 256
 )
 
-// Config deliberately keeps no more than seven top-level fields.
+// Config keeps one small top-level surface for all three v2 roles. Every
+// role reads only its own fields: relay uses listen and tokens, target uses
+// remote, token, name, and services, edge uses remote, token, name, and
+// mappings.
 type Config struct {
-	Mode   string       `json:"mode"`
-	Role   string       `json:"role,omitempty"`
-	Secret string       `json:"secret,omitempty"`
-	Token  string       `json:"token,omitempty"`
-	Listen string       `json:"listen,omitempty"`
-	Remote string       `json:"remote,omitempty"`
-	Tunnel TunnelConfig `json:"tunnel"`
+	Mode     string         `json:"mode"`
+	Listen   string         `json:"listen,omitempty"`
+	Remote   string         `json:"remote,omitempty"`
+	Token    string         `json:"token,omitempty"`
+	Name     string         `json:"name,omitempty"`
+	Tokens   []TokenEntry   `json:"tokens,omitempty"`
+	Services []ServiceEntry `json:"services,omitempty"`
+	Mappings []MappingEntry `json:"mappings,omitempty"`
 }
 
-type TunnelConfig struct {
-	Local  string       `json:"local,omitempty"`
-	Remote string       `json:"remote,omitempty"`
-	Name   string       `json:"name,omitempty"`
-	Pool   int          `json:"pool,omitempty"`
-	Rules  []TunnelRule `json:"rules,omitempty"`
+// TokenEntry is one access-token record. On a relay, ID is the generated
+// token id and the rotation fields keep the previous value valid through a
+// grace window. On a target or edge, the same structure lists group
+// memberships: ID is the local group name chosen by the operator and only
+// ID plus Token are used. The token value doubles as the end-to-end key
+// source for its group, so treat it like an SSH private key.
+type TokenEntry struct {
+	ID                string    `json:"id"`
+	Token             string    `json:"token"`
+	Note              string    `json:"note,omitempty"`
+	Disabled          bool      `json:"disabled,omitempty"`
+	CreatedAt         time.Time `json:"createdAt,omitempty"`
+	PreviousToken     string    `json:"previousToken,omitempty"`
+	PreviousExpiresAt time.Time `json:"previousExpiresAt,omitempty"`
 }
 
-type TunnelRule struct {
-	Name   string `json:"name,omitempty"`
-	Listen string `json:"listen,omitempty"`
-	Local  string `json:"local,omitempty"`
-	Remote string `json:"remote"`
-	Pool   int    `json:"pool,omitempty"`
+// ServiceEntry is one forwardable backend address published by a target.
+// Groups restricts which token groups may see and dial it; an empty list
+// publishes the service to every group the target joined.
+type ServiceEntry struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Address string   `json:"address"`
+	Groups  []string `json:"groups,omitempty"`
+}
+
+// MappingEntry maps one published service to a local edge listener. Group
+// selects which token group the service belongs to (optional while the
+// edge only joined one group). LAN controls whether the listener binds all
+// interfaces instead of loopback.
+type MappingEntry struct {
+	Service string `json:"service"`
+	Group   string `json:"group,omitempty"`
+	Port    int    `json:"port"`
+	LAN     bool   `json:"lan,omitempty"`
+}
+
+// legacyFields marks the v1 (punch/secret/tunnel) layout so upgrades fail
+// with migration guidance instead of an opaque unknown-field error.
+var legacyFields = []string{"role", "secret", "tunnel"}
+
+// ErrLegacyConfig is wrapped by Load when a v1 configuration file is found.
+var ErrLegacyConfig = errors.New("legacy v1 configuration")
+
+func LegacyConfigError() error {
+	return fmt.Errorf("%w: this file uses the MoleX v1 layout (mode \"punch\" with role, secret, and tunnel). MoleX v2 uses mode \"relay\", \"target\", or \"edge\" with tokens, services, and mappings. Recreate it with `molex config init --mode <relay|target|edge>` and see the v2 migration notes in the README", ErrLegacyConfig)
 }
 
 func Default() Config {
 	return Config{
-		Mode:   ModePunch,
-		Role:   RoleEdge,
-		Listen: "127.0.0.1:2222",
+		Mode:   ModeEdge,
 		Remote: "wss://molex.example.com" + DefaultWebSocketPath,
-		Tunnel: TunnelConfig{
-			Local:  "127.0.0.1:22",
-			Remote: "home-ssh",
-		},
 	}
 }
 
@@ -76,8 +110,18 @@ func Load(path string) (Config, error) {
 	}
 	defer f.Close()
 
+	raw, err := io.ReadAll(io.LimitReader(f, 1<<20))
+	if err != nil {
+		return Config{}, fmt.Errorf("read config: %w", err)
+	}
+	// Windows editors and PowerShell often prepend a UTF-8 BOM.
+	raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
+	if err := detectLegacyConfig(raw); err != nil {
+		return Config{}, err
+	}
+
 	var cfg Config
-	decoder := json.NewDecoder(io.LimitReader(f, 1<<20))
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
@@ -86,6 +130,25 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg.Normalized(), nil
+}
+
+func detectLegacyConfig(raw []byte) error {
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		return nil
+	}
+	if mode, ok := generic["mode"]; ok {
+		var value string
+		if err := json.Unmarshal(mode, &value); err == nil && strings.EqualFold(strings.TrimSpace(value), "punch") {
+			return LegacyConfigError()
+		}
+	}
+	for _, field := range legacyFields {
+		if _, ok := generic[field]; ok {
+			return LegacyConfigError()
+		}
+	}
+	return nil
 }
 
 func LoadOptional(path string) (Config, error) {
@@ -138,36 +201,42 @@ func Save(path string, cfg Config) error {
 
 func (c Config) Normalized() Config {
 	c.Mode = strings.ToLower(strings.TrimSpace(c.Mode))
-	c.Role = strings.ToLower(strings.TrimSpace(c.Role))
-	c.Secret = strings.TrimSpace(c.Secret)
-	c.Token = strings.TrimSpace(c.Token)
 	c.Listen = strings.TrimSpace(c.Listen)
 	c.Remote = strings.TrimSpace(c.Remote)
-	c.Tunnel.Local = strings.TrimSpace(c.Tunnel.Local)
-	c.Tunnel.Remote = strings.TrimSpace(c.Tunnel.Remote)
-	c.Tunnel.Name = strings.TrimSpace(c.Tunnel.Name)
-	for index := range c.Tunnel.Rules {
-		rule := &c.Tunnel.Rules[index]
-		rule.Name = strings.TrimSpace(rule.Name)
-		rule.Listen = strings.TrimSpace(rule.Listen)
-		rule.Local = strings.TrimSpace(rule.Local)
-		rule.Remote = strings.TrimSpace(rule.Remote)
-		if c.Role == RoleTarget && rule.Pool == 0 {
-			rule.Pool = DefaultTargetPool
+	c.Token = strings.TrimSpace(c.Token)
+	c.Name = strings.TrimSpace(c.Name)
+
+	for index := range c.Tokens {
+		token := &c.Tokens[index]
+		token.ID = strings.TrimSpace(token.ID)
+		token.Token = strings.TrimSpace(token.Token)
+		token.Note = strings.TrimSpace(token.Note)
+		token.PreviousToken = strings.TrimSpace(token.PreviousToken)
+	}
+	for index := range c.Services {
+		service := &c.Services[index]
+		service.ID = strings.TrimSpace(service.ID)
+		service.Name = strings.TrimSpace(service.Name)
+		service.Address = strings.TrimSpace(service.Address)
+		groups := service.Groups[:0]
+		for _, group := range service.Groups {
+			if trimmed := strings.TrimSpace(group); trimmed != "" {
+				groups = append(groups, trimmed)
+			}
 		}
+		service.Groups = groups
+	}
+	for index := range c.Mappings {
+		mapping := &c.Mappings[index]
+		mapping.Service = strings.TrimSpace(mapping.Service)
+		mapping.Group = strings.TrimSpace(mapping.Group)
 	}
 
 	if c.Mode == "" {
-		c.Mode = ModePunch
+		c.Mode = ModeEdge
 	}
 	if c.Mode == ModeRelay && c.Listen == "" {
 		c.Listen = "127.0.0.1:8080"
-	}
-	if c.Mode == ModePunch && c.Role == RoleEdge && c.Listen == "" {
-		c.Listen = "127.0.0.1:2222"
-	}
-	if c.Mode == ModePunch && c.Role == RoleTarget && c.Tunnel.Pool == 0 {
-		c.Tunnel.Pool = DefaultTargetPool
 	}
 	if c.Remote != "" {
 		if normalized, err := NormalizeRemote(c.Remote); err == nil {
@@ -186,88 +255,243 @@ func (c Config) Validate() error {
 		if err := validateAddress(c.Listen); err != nil {
 			problems = append(problems, "listen: "+err.Error())
 		}
-	case ModePunch:
-		if c.Role != RoleEdge && c.Role != RoleTarget {
-			problems = append(problems, "role must be edge or target")
-		}
-		if len(c.Secret) < 16 {
-			problems = append(problems, "secret must contain at least 16 characters")
-		}
-		if _, err := NormalizeRemote(c.Remote); err != nil {
-			problems = append(problems, "remote: "+err.Error())
-		} else if err := validateRemoteSecurity(c.Remote); err != nil {
-			problems = append(problems, "remote: "+err.Error())
-		}
-		if len(c.Tunnel.Rules) == 0 {
-			problems = append(problems, validateTunnelRoute(c.Role, c.Listen, c.Tunnel.Local, c.Tunnel.Remote, c.Tunnel.Name, c.Tunnel.Pool, "tunnel")...)
-		} else {
-			seenEdgeListeners := make(map[string]bool)
-			for index, rule := range c.Tunnel.Rules {
-				prefix := fmt.Sprintf("tunnel.rules[%d]", index)
-				problems = append(problems, validateTunnelRoute(c.Role, rule.Listen, rule.Local, rule.Remote, rule.Name, rule.Pool, prefix)...)
-				if c.Role == RoleEdge && rule.Listen != "" {
-					if seenEdgeListeners[rule.Listen] {
-						problems = append(problems, prefix+".listen: duplicate Edge listen address")
-					}
-					seenEdgeListeners[rule.Listen] = true
-				}
-			}
-		}
+		problems = append(problems, validateTokens(c.Tokens)...)
+	case ModeTarget:
+		problems = append(problems, validateClientCommon(c)...)
+		problems = append(problems, validateServices(c.Services, c.groupNameSet())...)
+	case ModeEdge:
+		problems = append(problems, validateClientCommon(c)...)
+		problems = append(problems, validateMappings(c.Mappings, c.groupNameSet(), len(c.GroupTokens()))...)
 	default:
-		problems = append(problems, "mode must be relay or punch")
+		problems = append(problems, "mode must be relay, target, or edge")
 	}
 
-	if c.Token != "" && len(c.Token) < 16 {
-		problems = append(problems, "token must contain at least 16 characters when set")
-	}
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
 	}
 	return nil
 }
 
-func validateTunnelRoute(role, listen, local, remote, name string, pool int, prefix string) []string {
+// GroupTokens returns the effective token-group memberships of a target or
+// edge: either the multi-group `tokens` list or the single `token` value as
+// one unnamed group.
+func (c Config) GroupTokens() []TokenEntry {
+	if len(c.Tokens) > 0 && c.Mode != ModeRelay {
+		return c.Tokens
+	}
+	if c.Token != "" {
+		return []TokenEntry{{ID: "", Token: c.Token}}
+	}
+	return nil
+}
+
+func (c Config) groupNameSet() map[string]bool {
+	names := make(map[string]bool)
+	for _, token := range c.GroupTokens() {
+		names[token.ID] = true
+	}
+	return names
+}
+
+func validateClientCommon(c Config) []string {
 	var problems []string
-	if remote == "" {
-		problems = append(problems, prefix+".remote channel is required")
-	} else if len(remote) > 128 {
-		problems = append(problems, prefix+".remote channel must be at most 128 characters")
+	if _, err := NormalizeRemote(c.Remote); err != nil {
+		problems = append(problems, "remote: "+err.Error())
+	} else if err := validateRemoteSecurity(c.Remote); err != nil {
+		problems = append(problems, "remote: "+err.Error())
 	}
-	if err := validateNodeName(name); err != nil {
-		problems = append(problems, prefix+".name: "+err.Error())
+	if err := validateNodeName(c.Name); err != nil {
+		problems = append(problems, "name: "+err.Error())
 	}
-	if role == RoleEdge {
-		if err := validateAddress(listen); err != nil {
-			problems = append(problems, prefix+".listen: "+err.Error())
+
+	if c.Token != "" && len(c.Tokens) > 0 {
+		problems = append(problems, "use either the single token field or the tokens group list, not both")
+		return problems
+	}
+	groups := c.GroupTokens()
+	if len(groups) == 0 {
+		problems = append(problems, fmt.Sprintf("token must contain at least %d characters", MinTokenLength))
+		return problems
+	}
+	if len(groups) > MaxTokens {
+		problems = append(problems, fmt.Sprintf("tokens: at most %d entries are supported", MaxTokens))
+		return problems
+	}
+	seenNames := make(map[string]bool, len(groups))
+	seenValues := make(map[string]bool, len(groups))
+	for index, group := range groups {
+		prefix := fmt.Sprintf("tokens[%d]", index)
+		if len(group.Token) < MinTokenLength {
+			problems = append(problems, fmt.Sprintf("%s.token must contain at least %d characters", prefix, MinTokenLength))
+		} else if seenValues[group.Token] {
+			problems = append(problems, prefix+".token: duplicate token value")
 		}
-	}
-	if role == RoleTarget {
-		if err := validateAddress(local); err != nil {
-			problems = append(problems, prefix+".local: "+err.Error())
+		seenValues[group.Token] = true
+		if group.ID == "" && len(groups) > 1 {
+			problems = append(problems, prefix+".id: a group name is required when joining several groups")
+		} else if group.ID != "" {
+			if err := validateNodeName(group.ID); err != nil {
+				problems = append(problems, prefix+".id: "+err.Error())
+			}
 		}
-		if pool < 0 || pool > MaxTargetPool {
-			problems = append(problems, fmt.Sprintf("%s.pool must be 0 (auto) or between 1 and %d", prefix, MaxTargetPool))
+		if seenNames[group.ID] {
+			problems = append(problems, prefix+".id: duplicate group name")
+		}
+		seenNames[group.ID] = true
+	}
+	return problems
+}
+
+func validateTokens(tokens []TokenEntry) []string {
+	var problems []string
+	if len(tokens) > MaxTokens {
+		problems = append(problems, fmt.Sprintf("tokens: at most %d entries are supported", MaxTokens))
+		return problems
+	}
+	seenIDs := make(map[string]bool, len(tokens))
+	seenValues := make(map[string]bool, len(tokens))
+	for index, token := range tokens {
+		prefix := fmt.Sprintf("tokens[%d]", index)
+		if token.ID == "" {
+			problems = append(problems, prefix+".id is required")
+		} else if seenIDs[token.ID] {
+			problems = append(problems, prefix+".id: duplicate token id")
+		}
+		seenIDs[token.ID] = true
+		if len(token.Token) < MinTokenLength {
+			problems = append(problems, fmt.Sprintf("%s.token must contain at least %d characters", prefix, MinTokenLength))
+		} else if seenValues[token.Token] {
+			problems = append(problems, prefix+".token: duplicate token value")
+		}
+		seenValues[token.Token] = true
+		if err := validateNodeName(token.Note); err != nil {
+			problems = append(problems, prefix+".note: "+err.Error())
+		}
+		if token.PreviousToken != "" {
+			if len(token.PreviousToken) < MinTokenLength {
+				problems = append(problems, fmt.Sprintf("%s.previousToken must contain at least %d characters", prefix, MinTokenLength))
+			}
+			if token.PreviousToken == token.Token {
+				problems = append(problems, prefix+".previousToken must differ from the current token")
+			}
+			if token.PreviousExpiresAt.IsZero() {
+				problems = append(problems, prefix+".previousExpiresAt is required while a previous token is kept")
+			}
 		}
 	}
 	return problems
 }
 
-func (c Config) ClientRoutes() []Config {
-	c = c.Normalized()
-	if c.Mode != ModePunch || len(c.Tunnel.Rules) == 0 {
-		c.Tunnel.Rules = nil
-		return []Config{c}
+func validateServices(services []ServiceEntry, groupNames map[string]bool) []string {
+	var problems []string
+	if len(services) > MaxServices {
+		problems = append(problems, fmt.Sprintf("services: at most %d entries are supported", MaxServices))
+		return problems
 	}
-	routes := make([]Config, 0, len(c.Tunnel.Rules))
-	for _, rule := range c.Tunnel.Rules {
-		route := c
-		route.Tunnel = TunnelConfig{Local: rule.Local, Remote: rule.Remote, Name: rule.Name, Pool: rule.Pool}
-		if c.Role == RoleEdge {
-			route.Listen = rule.Listen
+	seenIDs := make(map[string]bool, len(services))
+	seenNames := make(map[string]bool, len(services))
+	for index, service := range services {
+		prefix := fmt.Sprintf("services[%d]", index)
+		if service.ID == "" {
+			problems = append(problems, prefix+".id is required")
+		} else if seenIDs[service.ID] {
+			problems = append(problems, prefix+".id: duplicate service id")
 		}
-		routes = append(routes, route)
+		seenIDs[service.ID] = true
+		if service.Name == "" {
+			problems = append(problems, prefix+".name is required")
+		} else if err := validateNodeName(service.Name); err != nil {
+			problems = append(problems, prefix+".name: "+err.Error())
+		} else if seenNames[service.Name] {
+			problems = append(problems, prefix+".name: duplicate service name")
+		}
+		seenNames[service.Name] = true
+		if err := validateDialAddress(service.Address); err != nil {
+			problems = append(problems, prefix+".address: "+err.Error())
+		}
+		for _, group := range service.Groups {
+			if !groupNames[group] {
+				problems = append(problems, fmt.Sprintf("%s.groups: unknown group name %q", prefix, group))
+			}
+		}
 	}
-	return routes
+	return problems
+}
+
+func validateMappings(mappings []MappingEntry, groupNames map[string]bool, groupCount int) []string {
+	var problems []string
+	if len(mappings) > MaxMappings {
+		problems = append(problems, fmt.Sprintf("mappings: at most %d entries are supported", MaxMappings))
+		return problems
+	}
+	seenServices := make(map[string]bool, len(mappings))
+	seenPorts := make(map[int]bool, len(mappings))
+	for index, mapping := range mappings {
+		prefix := fmt.Sprintf("mappings[%d]", index)
+		key := mapping.Group + "\x00" + mapping.Service
+		if mapping.Service == "" {
+			problems = append(problems, prefix+".service is required")
+		} else if seenServices[key] {
+			problems = append(problems, prefix+".service: duplicate mapping for one service")
+		}
+		seenServices[key] = true
+		if mapping.Group == "" {
+			if groupCount > 1 {
+				problems = append(problems, prefix+".group is required when the edge joined several groups")
+			}
+		} else if !groupNames[mapping.Group] {
+			problems = append(problems, fmt.Sprintf("%s.group: unknown group name %q", prefix, mapping.Group))
+		}
+		if mapping.Port < 1 || mapping.Port > 65535 {
+			problems = append(problems, prefix+".port must be between 1 and 65535")
+		} else if seenPorts[mapping.Port] {
+			problems = append(problems, prefix+".port: duplicate local port")
+		}
+		seenPorts[mapping.Port] = true
+	}
+	return problems
+}
+
+// VisibleTo reports whether one published service is visible to a group.
+func (s ServiceEntry) VisibleTo(group string) bool {
+	if len(s.Groups) == 0 {
+		return true
+	}
+	for _, allowed := range s.Groups {
+		if allowed == group {
+			return true
+		}
+	}
+	return false
+}
+
+// ListenAddress returns the local listener address for one edge mapping.
+func (m MappingEntry) ListenAddress() string {
+	host := "127.0.0.1"
+	if m.LAN {
+		host = "0.0.0.0"
+	}
+	return net.JoinHostPort(host, strconv.Itoa(m.Port))
+}
+
+// FindToken matches a bearer token value against the configured entries.
+func (c Config) FindToken(value string) (TokenEntry, bool) {
+	for _, token := range c.Tokens {
+		if token.Token == value {
+			return token, true
+		}
+	}
+	return TokenEntry{}, false
+}
+
+// FindService returns the service entry with the given id.
+func (c Config) FindService(id string) (ServiceEntry, bool) {
+	for _, service := range c.Services {
+		if service.ID == id {
+			return service, true
+		}
+	}
+	return ServiceEntry{}, false
 }
 
 func NormalizeRemote(raw string) (string, error) {
@@ -294,12 +518,22 @@ func NormalizeRemote(raw string) (string, error) {
 	return u.String(), nil
 }
 
-func GenerateSecret() (string, error) {
+// GenerateToken creates a relay access token with the v2 prefix.
+func GenerateToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("generate secret: %w", err)
+		return "", fmt.Errorf("generate token: %w", err)
 	}
-	return "mx1_" + base64.RawURLEncoding.EncodeToString(b), nil
+	return "mx2_" + base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// GenerateID creates a short random identifier for tokens and services.
+func GenerateID(prefix string) (string, error) {
+	b := make([]byte, 5)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate id: %w", err)
+	}
+	return prefix + "-" + hex.EncodeToString(b), nil
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {
@@ -324,6 +558,23 @@ func validateAddress(address string) error {
 	n, err := strconv.Atoi(port)
 	if err != nil || n < 0 || n > 65535 {
 		return errors.New("port must be between 0 and 65535")
+	}
+	return nil
+}
+
+// validateDialAddress requires a concrete host and a non-zero port because
+// the target dials this address for every stream.
+func validateDialAddress(address string) error {
+	if address == "" {
+		return errors.New("address is required")
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || strings.TrimSpace(host) == "" {
+		return errors.New("must use host:port form")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return errors.New("port must be between 1 and 65535")
 	}
 	return nil
 }

@@ -2,62 +2,92 @@
 
 [English](upgrade-guide.md) | [简体中文](upgrade-guide.zh-CN.md)
 
-This guide compares `v0.1.0` through `v0.3.1`, explains component compatibility, and provides a production upgrade and rollback path. Relay, Edge, and Target are roles of the same binary; replace the binary on each role's host as needed.
+Relay, Edge, and Target are roles of the same binary. Replace the binary on each host. **v0.4.0 (v2) is a clean break** from `v0.3.1` and earlier: old `punch` / `secret` / `channel` files fail at startup with migration guidance.
 
 ## Version differences
 
 | Version | Main changes | Deployment impact |
 | --- | --- | --- |
-| `v0.1.0` | Initial public release with basic WSS/TCP transit, WebUI login, and automated releases. | A route effectively served one Edge/Target pair. |
-| `v0.2.0` | Per-route FIFO Edge/Target queues, same-role waiting, reusable node names, first-run WebUI password setup, fixed Target pools, multi-rule CRUD, Caddy helper, richer peer metadata, and actionable errors. | Relay must be at least `v0.2.0` for multiple Edges to queue on one route. Target pool still defaults to `1`. |
-| `v0.3.0` | Demand-driven one-Target/many-Edge sessions. `tunnel.pool: 0` opens the next independent WSS session after each pairing, up to 65,535; fixed pools `1–65535` remain supported. | Upgrade Target to `v0.3.0` and use `pool: 0` for the recommended topology. |
-| `v0.3.1` | Relay retains unmatched Targets as long-lived standby; Target standby waits beyond the short handshake deadline while cancellation remains immediate; each pool slot expands only once so reconnects cannot accumulate sockets; WebUI advances from occupied `9090` and opens the browser after readiness; expanded multi-Edge and fault coverage. | **Upgrade Relay and Target** to fully remove standby churn and long-running socket growth. Edge remains protocol compatible. Pin the WebUI address and disable browser launch on servers. |
+| `v0.1.0`–`v0.3.1` | v1 punch model: global Relay token plus per-route `secret` + `channel`. See the archived notes below if you are still on those builds. | v1 files are not read by v2. |
+| `v0.4.0` (v2) | Roles are `relay` / `target` / `edge`. One token = one Target + N Edges. Target publishes a service catalog; Edges map published services. Token rotation with a grace window, JSONL audit, multi-group processes, live metadata refresh. | Recreate every `molex.json`. Upgrade Relay, Target, and Edge together. |
 
-## Which roles must be upgraded
+## Upgrade from v1 (`≤v0.3.1`) to v2
 
-```text
-Edge 1 ─┐
-Edge 2 ─┼──> Relay 1 ───> Target 1
-Edge N ─┘
-```
+v2 does **not** auto-migrate. `mode: "punch"` and the `role` / `secret` / `tunnel` fields cause a startup error that points here.
 
-| Current state | Relay | Target | Edge | Result |
-| --- | --- | --- | --- | --- |
-| `v0.1.0` | Must upgrade to `>=v0.2.0` | Recommended | Optional | Old Relay cannot queue multiple Edges on one route. |
-| `v0.2.0` | Can remain | Upgrade to `v0.3.0` | Can remain | Target with `pool: 0` can accept multiple Edges; the protocol remains compatible. |
-| Mixed rollout | `v0.3.0` | `v0.3.0` | `v0.2.0` or `v0.3.0` | Suitable for rolling upgrades; unify versions afterward. |
-| Fix `v0.3.0` standby churn | Upgrade to `v0.3.1` | Upgrade to `v0.3.1` | May remain `v0.3.0` | Relay and Target fix pairing wait, handshake deadlines, and pool-slot expansion. |
+1. Download the v2 archive and verify `SHA256SUMS`.
+2. Back up every `molex.json` and the Relay web-password file. You will not reuse the JSON as-is.
+3. Relay: `molex config init --mode relay --force`. Start `molex web`, set the management password, and create one token per trust group. Old `secret` + `channel` pairs become one token each.
+4. Each former Target host: `molex config init --mode target --force`. Set `remote` to the same `wss://…/ws/session` URL, paste the token, and add every old `tunnel.local` (and each multi-rule `local`) as a published service.
+5. Each former Edge host: `molex config init --mode edge --force`. Paste the same token, start, and map the published services to the ports you used before.
+6. Discard v1 `secret` and `channel` values. They are not credentials in v2.
+7. Confirm in the Relay console: one Target online per token, Edges listed, ciphertext counters moving, and a TCP check from each Edge mapping.
 
-The Relay does not need to know the Target pool size and never decrypts payloads. Keep `secret`, `token`, `remote`, and `tunnel.remote` aligned between peers.
+Rolling a mixed v1/v2 fleet does not work. The hello, credentials, and catalog protocol are different. Cut over a whole token group at once (Relay first, then that group’s Target and Edges).
 
-## Configuration migration
-
-For the recommended Target configuration, set:
+### Example v2 files
 
 ```json
 {
-  "tunnel": {
-    "pool": 0
-  }
+  "mode": "relay",
+  "listen": "127.0.0.1:8080",
+  "tokens": [{ "id": "tok-office", "token": "mx2_generated-value", "note": "office" }]
 }
 ```
 
-`0` is demand-driven mode, `1` is one fixed session, and `N` pre-opens N independent sessions (`1–65535`). Each multi-rule Target route can set its own pool.
+```json
+{
+  "mode": "target",
+  "remote": "wss://molex.example.com/ws/session",
+  "token": "mx2_generated-value",
+  "services": [{ "id": "svc-ssh", "name": "ssh", "address": "127.0.0.1:22" }]
+}
+```
 
-## Recommended upgrade
+```json
+{
+  "mode": "edge",
+  "remote": "wss://molex.example.com/ws/session",
+  "token": "mx2_generated-value",
+  "mappings": [{ "service": "svc-ssh", "port": 2222 }]
+}
+```
 
-1. Download the `v0.3.1` archive for the platform and verify it with `SHA256SUMS`.
-2. Back up each `molex.json` and Web password file.
-3. Upgrade Relay first, then restart and check `/healthz`.
-4. Upgrade Target, set `tunnel.pool` to `0`, and confirm the WebUI reports a running adaptive pool.
-5. Upgrade Edges one at a time. An Edge only reports its local listener after a secure route is ready.
-6. Confirm all Edges are `paired` in the Relay console and use peer IDs to distinguish duplicate names.
-7. Run one TCP check from every Edge local endpoint.
+## Staying on v2
 
-Rolling upgrades are supported. Do not stop the only Relay and only Target simultaneously.
+Token rotation (`POST /api/tokens/:id/rotate` or the Relay console **Rotate** button) keeps the previous value valid for 1–30 days (default 3). Update every Target and Edge before expiry. Audit records store token ids only.
 
-## Rollback and acceptance
+A single Target or Edge process may join several tokens via `tokens[]`. Restrict Target services with `services[].groups`. Edge mappings need `group` when more than one group is joined.
 
-Stop the `v0.3.0` Target, restore the previous binary/configuration, and set `pool: 1` for legacy single-session behavior. Keep the route secret, token, channel, and WSS URL unchanged. Verify version output, paired peers, TCP traffic, Target restart recovery, `/healthz`, and system resource usage.
+Linux Relay keep-alive: `deploy/molex-relay.service`. Without systemd: `deploy/molex-keepalive.sh`.
 
-See the [complete user guide](user-guide.md), [architecture](architecture.md), and [testing checks](testing.md).
+## Rollback from v2
+
+1. Stop the v2 processes.
+2. Restore the v1 binaries and the backed-up punch configurations.
+3. Point Caddy at the restored Relay. v2 tokens will not work on v1, and v1 secrets will not work on v2.
+
+## Acceptance after a v2 cut-over
+
+- [ ] `molex version` reports the v2 build.
+- [ ] `molex config check` accepts the new files and rejects any leftover punch file.
+- [ ] Relay console: token list, one Target per token, Edges online.
+- [ ] Target catalog matches the published services; Edge mappings listen only when running.
+- [ ] TCP check through at least one mapping.
+- [ ] Duplicate Target is rejected; token disable disconnects the group.
+- [ ] `/healthz` on the data and management listeners succeeds.
+
+See the [user guide](user-guide.md), [architecture](architecture.md), and [testing](testing.md).
+
+## Archived: v0.1.0–v0.3.1 (v1 only)
+
+These notes apply only if you are still moving between v1 builds and have not cut over to v2.
+
+| Version | Notes |
+| --- | --- |
+| `v0.1.0` | One Edge/Target pair per opaque route. |
+| `v0.2.0` | FIFO queues; Relay must be `>=v0.2.0` for multiple Edges on one channel. |
+| `v0.3.0` | `tunnel.pool: 0` demand-driven Target sessions. |
+| `v0.3.1` | Long-lived Target standby; upgrade Relay and Target to stop standby churn. |
+
+v1 peers must keep `secret`, `token`, `remote`, and `tunnel.remote` aligned. That layout is obsolete in v2.

@@ -4,10 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/suifei/molex/internal/config"
 )
+
+const placeholderToken = "mx2_replace-with-the-relay-token"
 
 func newConfigCommand() *cobra.Command {
 	command := &cobra.Command{Use: "config", Short: "Create or validate a configuration"}
@@ -16,7 +19,7 @@ func newConfigCommand() *cobra.Command {
 }
 
 func newConfigInitCommand() *cobra.Command {
-	var path, mode, role string
+	var path, mode string
 	var force bool
 	command := &cobra.Command{
 		Use:   "init",
@@ -29,19 +32,41 @@ func newConfigInitCommand() *cobra.Command {
 					return err
 				}
 			}
-			cfg := config.Default()
-			cfg.Mode = mode
-			cfg.Role = role
-			secret, err := config.GenerateSecret()
-			if err != nil {
-				return err
-			}
-			if mode == config.ModeRelay {
-				cfg.Listen = "127.0.0.1:8080"
-				cfg.Token = secret
-				cfg.Secret = ""
-			} else {
-				cfg.Secret = secret
+			var cfg config.Config
+			switch mode {
+			case config.ModeRelay:
+				token, err := config.GenerateToken()
+				if err != nil {
+					return err
+				}
+				id, err := config.GenerateID("tok")
+				if err != nil {
+					return err
+				}
+				cfg = config.Config{
+					Mode:   config.ModeRelay,
+					Listen: "127.0.0.1:8080",
+					Tokens: []config.TokenEntry{{
+						ID:        id,
+						Token:     token,
+						Note:      "default",
+						CreatedAt: time.Now().UTC(),
+					}},
+				}
+			case config.ModeTarget:
+				cfg = config.Config{
+					Mode:   config.ModeTarget,
+					Remote: "wss://molex.example.com" + config.DefaultWebSocketPath,
+					Token:  placeholderToken,
+				}
+			case config.ModeEdge:
+				cfg = config.Config{
+					Mode:   config.ModeEdge,
+					Remote: "wss://molex.example.com" + config.DefaultWebSocketPath,
+					Token:  placeholderToken,
+				}
+			default:
+				return fmt.Errorf("mode must be relay, target, or edge (got %q)", mode)
 			}
 			if err := config.Save(path, cfg); err != nil {
 				return err
@@ -51,8 +76,7 @@ func newConfigInitCommand() *cobra.Command {
 		},
 	}
 	command.Flags().StringVarP(&path, "config", "c", "molex.json", "configuration file")
-	command.Flags().StringVar(&mode, "mode", config.ModePunch, "mode: relay or punch")
-	command.Flags().StringVar(&role, "role", config.RoleEdge, "client role: edge or target")
+	command.Flags().StringVar(&mode, "mode", config.ModeEdge, "mode: relay, target, or edge")
 	command.Flags().BoolVar(&force, "force", false, "replace an existing file")
 	return command
 }

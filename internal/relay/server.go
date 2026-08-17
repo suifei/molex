@@ -29,10 +29,26 @@ const maxRelayMetadataFrames = 8
 
 const relayWriteTimeout = 30 * time.Second
 
+// Keepalive bounds how long a dead connection can occupy its group slot.
+// This matters most for the single-target-per-token rule: after a target
+// host crashes, its stale sessions are cleared within keepAliveTimeout and
+// the restarted target can join again.
+const (
+	keepAliveInterval = 20 * time.Second
+	keepAliveTimeout  = 75 * time.Second
+)
+
+// Application close codes surfaced to clients for actionable errors.
+const (
+	CloseKicked          = 4401
+	CloseTokenDisabled   = 4403
+	CloseDuplicateTarget = 4409
+)
+
 type Options struct {
 	Listen      string
 	Path        string
-	Token       string
+	Tokens      []Credential
 	PairTimeout time.Duration
 	Logger      *slog.Logger
 	Reporter    telemetry.Reporter
@@ -41,14 +57,17 @@ type Options struct {
 type Server struct {
 	options  Options
 	registry *registry
+	tokens   *tokenStore
+	groups   *groupSet
 	upgrader websocket.Upgrader
 
-	mu          sync.Mutex
-	httpServer  *http.Server
-	listener    net.Listener
-	connections map[*websocket.Conn]struct{}
-	closed      bool
-	nextPeerID  atomic.Uint64
+	mu           sync.Mutex
+	httpServer   *http.Server
+	listener     net.Listener
+	connections  map[*websocket.Conn]struct{}
+	participants map[string]*participant
+	closed       bool
+	nextPeerID   atomic.Uint64
 }
 
 func New(options Options) *Server {
@@ -62,9 +81,12 @@ func New(options Options) *Server {
 		options.Logger = slog.Default()
 	}
 	s := &Server{
-		options:     options,
-		registry:    newRegistry(),
-		connections: make(map[*websocket.Conn]struct{}),
+		options:      options,
+		registry:     newRegistry(),
+		tokens:       newTokenStore(options.Tokens),
+		groups:       newGroupSet(),
+		connections:  make(map[*websocket.Conn]struct{}),
+		participants: make(map[string]*participant),
 	}
 	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:    4096,
@@ -73,6 +95,50 @@ func New(options Options) *Server {
 		CheckOrigin:       sameOriginOrNative,
 	}
 	return s
+}
+
+// UpdateTokens applies the latest token list without restarting the relay.
+// Groups whose token was disabled or removed are disconnected immediately.
+func (s *Server) UpdateTokens(credentials []Credential) {
+	s.tokens.replace(credentials)
+	active := s.tokens.activeIDs()
+	for _, tokenID := range s.groups.tokenIDs() {
+		if active[tokenID] {
+			continue
+		}
+		members := s.groups.members(tokenID)
+		for _, member := range members {
+			member.armClose(CloseTokenDisabled, "token disabled by relay administrator")
+		}
+		for _, member := range members {
+			member.closeWith(CloseTokenDisabled, "token disabled by relay administrator")
+		}
+		if len(members) > 0 {
+			telemetry.Emit(s.options.Reporter, telemetry.Event{
+				Type:    "relay_token_revoked",
+				Level:   "warning",
+				Message: fmt.Sprintf("Token %s was disabled or removed; %d connected client(s) were disconnected", tokenID, len(members)),
+			})
+		}
+	}
+}
+
+// DisconnectPeer closes one connected participant by its peer id.
+func (s *Server) DisconnectPeer(peerID string) bool {
+	s.mu.Lock()
+	target := s.participants[peerID]
+	s.mu.Unlock()
+	if target == nil {
+		return false
+	}
+	target.armClose(CloseKicked, "disconnected by relay administrator")
+	target.closeWith(CloseKicked, "disconnected by relay administrator")
+	telemetry.Emit(s.options.Reporter, telemetry.Event{
+		Type:    "relay_peer_kicked",
+		Level:   "warning",
+		Message: fmt.Sprintf("%s %s was disconnected by the relay administrator", displayRole(target.role), target.displayName()),
+	})
+	return true
 }
 
 func (s *Server) Handler() http.Handler {
@@ -116,6 +182,8 @@ func (s *Server) Run(ctx context.Context) error {
 		Message: "Relay is accepting WebSocket sessions",
 		Listen:  listener.Addr().String(),
 	})
+
+	go s.sweepExpiredLegacy(ctx)
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -171,9 +239,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !validBearerToken(r.Header.Get("Authorization"), s.options.Token) {
+	token, status := s.authorize(r.Header.Get("Authorization"))
+	if status != 0 {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="relay"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		if status == http.StatusForbidden {
+			http.Error(w, "token disabled", status)
+		} else {
+			http.Error(w, "unauthorized", status)
+		}
 		return
 	}
 	conn, err := s.upgrader.Upgrade(w, r, nil)
@@ -216,8 +289,16 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			time.Now().Add(time.Second))
 		return
 	}
-	conn.SetPingHandler(defaultPingHandler)
-	_ = conn.SetReadDeadline(time.Time{})
+	if subtle.ConstantTimeCompare(hello.Route[:], token.route[:]) != 1 {
+		_ = conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "session route does not match the presented token"),
+			time.Now().Add(time.Second))
+		return
+	}
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(keepAliveTimeout))
+	})
+	_ = conn.SetReadDeadline(time.Now().Add(keepAliveTimeout))
 	conn.SetReadLimit(65 << 10)
 	ip, proxied := clientConnection(r)
 
@@ -225,7 +306,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		id:          strconv.FormatUint(s.nextPeerID.Add(1), 10),
 		ip:          ip,
 		proxied:     proxied,
-		metadata:    protocol.OpenRelayMetadata(hello, s.options.Token, metadataFrames),
+		tokenID:     token.id,
+		legacyToken: token.legacy,
 		routeID:     routeIdentifier(hello.Route),
 		connectedAt: time.Now().UTC(),
 		conn:        conn,
@@ -237,14 +319,35 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		reported:    make(chan struct{}),
 		frames:      make(chan []byte),
 	}
+	initialMetadata := protocol.OpenRelayMetadata(hello, token.token, metadataFrames)
+	peer.metadata.Store(&initialMetadata)
+	// Clients may refresh their operational metadata (name, service and
+	// mapping counts) at runtime through the same encrypted ping channel.
+	refreshPeer := peer
+	conn.SetPingHandler(func(data string) error {
+		if len(data) == protocol.RelayMetadataFrameSize {
+			s.queuePeerMetadata(refreshPeer, token.token, []byte(data))
+		}
+		return defaultPingHandler(data)
+	})
+	if err := s.groups.join(peer); err != nil {
+		s.emitTargetRejected(peer)
+		peer.closeWith(CloseDuplicateTarget, "another target is already connected for this token")
+		return
+	}
 	if err := s.registry.join(peer); err != nil {
+		s.groups.leave(peer)
 		peer.closeWith(websocket.ClosePolicyViolation, "session unavailable")
 		return
 	}
+	s.trackParticipant(peer)
 	defer func() {
+		s.untrackParticipant(peer)
 		s.registry.remove(peer)
+		s.groups.leave(peer)
 		s.emitPeerDisconnected(peer)
 	}()
+	go s.keepAlive(peer)
 	go s.readParticipant(peer)
 	s.emitPeerConnected(peer)
 	close(peer.reported)
@@ -254,6 +357,147 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.awaitParticipant(r.Context(), peer)
+}
+
+// authorize resolves the bearer token. It returns a non-zero HTTP status
+// when admission must be rejected.
+func (s *Server) authorize(header string) (tokenState, int) {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return tokenState{}, http.StatusUnauthorized
+	}
+	state, ok := s.tokens.lookup(strings.TrimPrefix(header, prefix))
+	if !ok {
+		return tokenState{}, http.StatusUnauthorized
+	}
+	if state.disabled {
+		return tokenState{}, http.StatusForbidden
+	}
+	return state, 0
+}
+
+func (s *Server) keepAlive(p *participant) {
+	ticker := time.NewTicker(keepAliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-ticker.C:
+			if err := p.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+				p.abort()
+				return
+			}
+		}
+	}
+}
+
+// queuePeerMetadata buffers one encrypted metadata ping. A complete refresh
+// is several frames (name, endpoint, platform, …); they are flushed together
+// after a short burst window so the per-connection rate limit cannot drop
+// the later fields.
+func (s *Server) queuePeerMetadata(p *participant, tokenValue string, frame []byte) {
+	p.metaMu.Lock()
+	p.pendingMeta = append(p.pendingMeta, append([]byte(nil), frame...))
+	if len(p.pendingMeta) > maxRelayMetadataFrames {
+		p.pendingMeta = p.pendingMeta[len(p.pendingMeta)-maxRelayMetadataFrames:]
+	}
+	startFlush := !p.metaFlush
+	if startFlush {
+		p.metaFlush = true
+	}
+	p.metaMu.Unlock()
+	if startFlush {
+		go s.flushPeerMetadata(p, tokenValue)
+	}
+}
+
+func (s *Server) flushPeerMetadata(p *participant, tokenValue string) {
+	timer := time.NewTimer(40 * time.Millisecond)
+	select {
+	case <-p.done:
+		timer.Stop()
+	case <-timer.C:
+	}
+	p.metaMu.Lock()
+	frames := p.pendingMeta
+	p.pendingMeta = nil
+	p.metaFlush = false
+	p.metaMu.Unlock()
+	if len(frames) == 0 {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := p.lastMeta.Load()
+	if last != 0 && now-last < int64(5*time.Second) {
+		return
+	}
+	if !p.lastMeta.CompareAndSwap(last, now) {
+		return
+	}
+	hello, err := protocol.ParseHello(p.hello)
+	if err != nil {
+		return
+	}
+	update := protocol.OpenRelayMetadata(hello, tokenValue, frames)
+	if update == (protocol.RelayMetadata{}) {
+		return
+	}
+	p.mergeMetadata(update)
+	status := telemetry.PeerStatusWaiting
+	select {
+	case <-p.paired:
+		status = telemetry.PeerStatusPaired
+	default:
+	}
+	telemetry.Emit(s.options.Reporter, telemetry.Event{
+		Type:      "relay_peer_stats",
+		Level:     "info",
+		Transient: true,
+		PeerChange: &telemetry.PeerChange{
+			Action: telemetry.PeerActionUpdate,
+			Peers:  []telemetry.Peer{p.telemetryPeer(status)},
+		},
+	})
+}
+
+// sweepExpiredLegacy drops participants whose rotated-out token value fell
+// past its grace window.
+func (s *Server) sweepExpiredLegacy(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.dropExpiredLegacy()
+		}
+	}
+}
+
+func (s *Server) dropExpiredLegacy() {
+	s.mu.Lock()
+	candidates := make([]*participant, 0)
+	for _, participant := range s.participants {
+		if participant.legacyToken {
+			candidates = append(candidates, participant)
+		}
+	}
+	s.mu.Unlock()
+	const reason = "rotated token grace period ended; switch to the new token"
+	expired := candidates[:0]
+	for _, participant := range candidates {
+		if s.tokens.legacyExpired(participant.tokenID) {
+			expired = append(expired, participant)
+		}
+	}
+	for _, participant := range expired {
+		participant.armClose(CloseTokenDisabled, reason)
+	}
+	for _, participant := range expired {
+		participant.closeWith(CloseTokenDisabled, reason)
+	}
 }
 
 func (s *Server) awaitParticipant(ctx context.Context, participant *participant) {
@@ -312,6 +556,7 @@ func (s *Server) readParticipant(participant *participant) {
 			participant.abort()
 			return
 		}
+		_ = participant.conn.SetReadDeadline(time.Now().Add(keepAliveTimeout))
 		if messageType != websocket.BinaryMessage {
 			participant.closeWith(websocket.ClosePolicyViolation, "binary frames required")
 			return
@@ -427,6 +672,18 @@ func (s *Server) untrackConnection(conn *websocket.Conn) {
 	s.mu.Unlock()
 }
 
+func (s *Server) trackParticipant(p *participant) {
+	s.mu.Lock()
+	s.participants[p.id] = p
+	s.mu.Unlock()
+}
+
+func (s *Server) untrackParticipant(p *participant) {
+	s.mu.Lock()
+	delete(s.participants, p.id)
+	s.mu.Unlock()
+}
+
 func (s *Server) closeConnections() {
 	s.mu.Lock()
 	s.closed = true
@@ -451,6 +708,14 @@ func (s *Server) emitPeerConnected(participant *participant) {
 			Action: telemetry.PeerActionUpsert,
 			Peers:  []telemetry.Peer{peer},
 		},
+	})
+}
+
+func (s *Server) emitTargetRejected(participant *participant) {
+	telemetry.Emit(s.options.Reporter, telemetry.Event{
+		Type:    "relay_target_rejected",
+		Level:   "warning",
+		Message: fmt.Sprintf("A second Target from %s was rejected for token %s; each token accepts exactly one Target", participant.ip, participant.tokenID),
 	})
 }
 
@@ -497,15 +762,17 @@ func (s *Server) emitPeerDisconnected(participant *participant) {
 }
 
 func (p *participant) telemetryPeer(status string) telemetry.Peer {
+	metadata := p.currentMetadata()
 	peer := telemetry.Peer{
 		ID:             p.id,
 		IP:             p.ip,
-		Name:           p.metadata.Name,
+		Name:           metadata.Name,
 		Role:           p.role.String(),
 		Status:         status,
-		Endpoint:       p.metadata.Endpoint,
-		RelayEndpoint:  p.metadata.RelayEndpoint,
-		Platform:       p.metadata.Platform,
+		TokenID:        p.tokenID,
+		Endpoint:       metadata.Endpoint,
+		RelayEndpoint:  metadata.RelayEndpoint,
+		Platform:       metadata.Platform,
 		RouteID:        p.routeID,
 		Proxied:        p.proxied,
 		ConnectedAt:    p.connectedAt,
@@ -519,9 +786,16 @@ func (p *participant) telemetryPeer(status string) telemetry.Peer {
 	}
 	if counterpart := p.peer.Load(); counterpart != nil {
 		peer.PeerID = counterpart.id
-		peer.PeerName = counterpart.metadata.Name
+		peer.PeerName = counterpart.currentMetadata().Name
 	}
 	return peer
+}
+
+func (p *participant) displayName() string {
+	if name := p.currentMetadata().Name; name != "" {
+		return name
+	}
+	return "#" + p.id
 }
 
 func peerMetricVersion(peers ...*participant) uint64 {
@@ -592,19 +866,6 @@ func parseIP(value string) (netip.Addr, bool) {
 		return netip.Addr{}, false
 	}
 	return address.Unmap(), true
-}
-
-func validBearerToken(header, expected string) bool {
-	if expected == "" {
-		return true
-	}
-	const prefix = "Bearer "
-	if !strings.HasPrefix(header, prefix) {
-		return false
-	}
-	providedHash := sha256.Sum256([]byte(strings.TrimSpace(strings.TrimPrefix(header, prefix))))
-	expectedHash := sha256.Sum256([]byte(expected))
-	return subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) == 1
 }
 
 func sameOriginOrNative(r *http.Request) bool {

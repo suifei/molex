@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/suifei/molex/internal/config"
 	"github.com/suifei/molex/internal/webui"
 )
 
@@ -57,15 +58,35 @@ type webRunOptions struct {
 }
 
 func runWeb(ctx context.Context, options webRunOptions) error {
-	password, setupPasswordPath, err := loadOrSetupWebPassword(options.passwordFile)
-	if err != nil {
+	mode := ""
+	configExists := true
+	cfg, err := config.Load(options.configPath)
+	switch {
+	case err == nil:
+		mode = cfg.Mode
+	case errors.Is(err, os.ErrNotExist):
+		configExists = false
+		mode = config.ModeEdge
+	default:
 		return err
+	}
+
+	// Only the relay console is password protected. Target and edge consoles
+	// stay loopback-only without a login flow.
+	var password, setupPasswordPath string
+	if mode == config.ModeRelay {
+		password, setupPasswordPath, err = loadOrSetupWebPassword(options.passwordFile)
+		if err != nil {
+			return err
+		}
 	}
 	logger := slog.New(slog.NewTextHandler(options.loggerOutput, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	server, err := webui.New(webui.Options{
 		Listen:            options.listen,
 		AutoListen:        options.autoListen,
 		ConfigPath:        options.configPath,
+		Mode:              mode,
+		ModeLocked:        configExists,
 		Password:          password,
 		SetupPasswordPath: setupPasswordPath,
 		AutoStart:         options.autoStart,

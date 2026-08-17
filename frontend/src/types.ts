@@ -1,42 +1,97 @@
-export type Mode = "relay" | "punch";
+export type Mode = "relay" | "target" | "edge";
 export type Role = "edge" | "target";
 export type RuntimeState = "idle" | "starting" | "connecting" | "running" | "stopping" | "error";
 export type PeerStatus = "waiting" | "paired";
+export type MappingState = "listening" | "waiting" | "error";
 
-export interface TunnelConfig {
-  local: string;
-  remote: string;
-  name: string;
-  pool?: number;
-  rules?: TunnelRule[];
+export interface TokenEntry {
+  id: string;
+  token: string;
+  note?: string;
+  disabled?: boolean;
+  createdAt?: string;
+  previousToken?: string;
+  previousExpiresAt?: string;
 }
 
-export interface TunnelRule {
+export interface ServiceEntry {
+  id: string;
   name: string;
-  listen: string;
-  local: string;
-  remote: string;
-  pool?: number;
+  address: string;
+  groups?: string[];
+}
+
+export interface MappingEntry {
+  service: string;
+  group?: string;
+  port: number;
+  lan?: boolean;
 }
 
 export interface Config {
   mode: Mode;
-  role: Role;
-  secret: string;
-  token: string;
-  listen: string;
-  remote: string;
-  tunnel: TunnelConfig;
+  listen?: string;
+  remote?: string;
+  token?: string;
+  name?: string;
+  tokens?: TokenEntry[];
+  services?: ServiceEntry[];
+  mappings?: MappingEntry[];
+}
+
+export interface CatalogService {
+  id: string;
+  name: string;
+  address: string;
+  group?: string;
+}
+
+export interface GroupCatalog {
+  group: string;
+  online: boolean;
+  services: CatalogService[];
+}
+
+export interface CatalogUpdate {
+  online: boolean;
+  services: CatalogService[];
+  groups?: GroupCatalog[];
+}
+
+export interface MappingStatus {
+  service: string;
+  group?: string;
+  serviceName?: string;
+  address?: string;
+  listen?: string;
+  lan?: boolean;
+  state: MappingState;
+  message?: string;
+  connections?: number;
+  bytes?: number;
+  updatedAt?: string;
+}
+
+export interface ServiceStatus {
+  id: string;
+  name: string;
+  address: string;
+  groups?: string[];
+  streams?: number;
+  lastError?: string;
+  lastErrorAt?: string;
 }
 
 export interface RuntimeStatus {
   state: RuntimeState;
   mode?: Mode;
-  role?: Role;
   listen?: string;
   message?: string;
   startedAt?: string;
   peers?: RelayPeer[];
+  catalog?: CatalogUpdate;
+  mappings?: MappingStatus[];
+  services?: ServiceStatus[];
 }
 
 export interface RelayPeer {
@@ -45,6 +100,7 @@ export interface RelayPeer {
   name?: string;
   role: Role;
   status: PeerStatus;
+  tokenId?: string;
   endpoint?: string;
   relayEndpoint?: string;
   platform?: string;
@@ -73,10 +129,22 @@ export interface RuntimeEvent {
   listen?: string;
   time: string;
   peerChange?: PeerChange;
+  catalog?: CatalogUpdate;
+  mappings?: MappingStatus[];
+  services?: ServiceStatus[];
   transient?: boolean;
 }
 
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
+}
+
+export interface SessionState {
+  authenticated: boolean;
+  setupRequired?: boolean;
+  csrfToken?: string;
+  mode: Mode;
+  modeLocked: boolean;
+  authRequired: boolean;
 }

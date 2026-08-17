@@ -15,23 +15,29 @@ import (
 const RelayMetadataFrameSize = 125
 
 const (
-	relayMetadataVersion  = 1
-	relayMetadataValueMax = 106
+	relayMetadataVersion   = 1
+	relayMetadataNonceSize = 12
+	// version + length + value must fit the sealed plaintext after the
+	// kind byte, the in-the-clear nonce, and the GCM tag.
+	relayMetadataValueMax = RelayMetadataFrameSize - 1 - relayMetadataNonceSize - 16 - 2
 
 	relayMetadataName byte = iota + 1
 	relayMetadataEndpoint
 	relayMetadataRelay
 	relayMetadataPlatform
+	relayMetadataInstance
 )
 
 // RelayMetadata contains operational labels that an authenticated Relay may
 // display. It deliberately excludes the channel, route key, payload secret,
-// and relay token.
+// and relay token. Instance identifies one target process so the relay can
+// reject a second target joining the same token while the first is alive.
 type RelayMetadata struct {
 	Name          string
 	Endpoint      string
 	RelayEndpoint string
 	Platform      string
+	Instance      string
 }
 
 // SealRelayMetadata produces fixed-size encrypted WebSocket ping payloads.
@@ -49,6 +55,7 @@ func SealRelayMetadata(hello *Hello, relayToken string, metadata RelayMetadata) 
 		{relayMetadataEndpoint, metadata.Endpoint},
 		{relayMetadataRelay, metadata.RelayEndpoint},
 		{relayMetadataPlatform, metadata.Platform},
+		{relayMetadataInstance, metadata.Instance},
 	}
 	key := relayMetadataKey(hello.Route, relayToken)
 	block, err := aes.NewCipher(key[:])
@@ -66,7 +73,7 @@ func SealRelayMetadata(hello *Hello, relayToken string, metadata RelayMetadata) 
 		if len(value) == 0 {
 			continue
 		}
-		plaintext := make([]byte, RelayMetadataFrameSize-1-aead.Overhead())
+		plaintext := make([]byte, RelayMetadataFrameSize-1-relayMetadataNonceSize-aead.Overhead())
 		if _, err := rand.Read(plaintext); err != nil {
 			return nil, err
 		}
@@ -74,12 +81,16 @@ func SealRelayMetadata(hello *Hello, relayToken string, metadata RelayMetadata) 
 		plaintext[1] = byte(len(value))
 		copy(plaintext[2:], value)
 
+		nonce := make([]byte, relayMetadataNonceSize)
+		if _, err := rand.Read(nonce); err != nil {
+			return nil, err
+		}
 		maskedKind := field.kind ^ key[0]
-		frame := make([]byte, 1, RelayMetadataFrameSize)
+		frame := make([]byte, 1+relayMetadataNonceSize, RelayMetadataFrameSize)
 		frame[0] = maskedKind
-		nonce := relayMetadataNonce(key, hello.Nonce, field.kind)
+		copy(frame[1:], nonce)
 		aad := relayMetadataAAD(hello, maskedKind)
-		frame = aead.Seal(frame, nonce[:], plaintext, aad)
+		frame = aead.Seal(frame, nonce, plaintext, aad)
 		frames = append(frames, frame)
 	}
 	return frames, nil
@@ -107,12 +118,12 @@ func OpenRelayMetadata(hello *Hello, relayToken string, frames [][]byte) RelayMe
 			continue
 		}
 		kind := frame[0] ^ key[0]
-		if kind < relayMetadataName || kind > relayMetadataPlatform {
+		if kind < relayMetadataName || kind > relayMetadataInstance {
 			continue
 		}
-		nonce := relayMetadataNonce(key, hello.Nonce, kind)
-		plaintext, err := aead.Open(nil, nonce[:], frame[1:], relayMetadataAAD(hello, frame[0]))
-		if err != nil || len(plaintext) != RelayMetadataFrameSize-1-aead.Overhead() || plaintext[0] != relayMetadataVersion {
+		nonce := frame[1 : 1+relayMetadataNonceSize]
+		plaintext, err := aead.Open(nil, nonce, frame[1+relayMetadataNonceSize:], relayMetadataAAD(hello, frame[0]))
+		if err != nil || len(plaintext) != RelayMetadataFrameSize-1-relayMetadataNonceSize-aead.Overhead() || plaintext[0] != relayMetadataVersion {
 			continue
 		}
 		length := int(plaintext[1])
@@ -132,6 +143,8 @@ func OpenRelayMetadata(hello *Hello, relayToken string, frames [][]byte) RelayMe
 			metadata.RelayEndpoint = value
 		case relayMetadataPlatform:
 			metadata.Platform = value
+		case relayMetadataInstance:
+			metadata.Instance = value
 		}
 	}
 	return metadata
@@ -144,16 +157,6 @@ func relayMetadataKey(route [32]byte, relayToken string) [32]byte {
 	var key [32]byte
 	copy(key[:], mac.Sum(nil))
 	return key
-}
-
-func relayMetadataNonce(key [32]byte, helloNonce [16]byte, kind byte) [12]byte {
-	mac := hmac.New(sha256.New, key[:])
-	mac.Write([]byte("molex/relay-metadata-nonce/v1\x00"))
-	mac.Write(helloNonce[:])
-	mac.Write([]byte{kind})
-	var nonce [12]byte
-	copy(nonce[:], mac.Sum(nil))
-	return nonce
 }
 
 func relayMetadataAAD(hello *Hello, maskedKind byte) []byte {

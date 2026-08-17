@@ -2,102 +2,92 @@
 
 [English](upgrade-guide.md) | **简体中文**
 
-本文说明 `v0.1.0` 至 `v0.3.1` 的主要差异、兼容关系以及生产环境升级步骤。MoleX 的 Relay、Edge、Target 都是同一个二进制的不同运行角色；升级时请根据角色分别替换对应主机上的二进制。
+Relay、Edge、Target 是同一二进制的不同角色，按主机分别替换即可。**v0.4.0（v2）相对 `v0.3.1` 及更早版本是干净切换**：旧的 `punch` / `secret` / `channel` 配置会在启动时失败并给出迁移指引。
 
 ## 版本差异
 
 | 版本 | 主要内容 | 对部署的影响 |
 | --- | --- | --- |
-| `v0.1.0` | 首次公开版本；Relay、Edge、Target 的基本 WSS/TCP 转发、WebUI 登录和自动发布流程。 | 同一不透明路由默认按一对 Edge/Target 会合，不能满足多个 Edge 共享一个 Target。 |
-| `v0.2.0` | Relay 为每个路由维护 Edge/Target FIFO 等待队列；允许同角色客户端排队和同名 Node name；首次运行 WebUI 密码设置；Target 固定会话池；多转发规则 CRUD；Caddy 配置辅助；更完整的连接元数据和错误指导。 | Relay 至少升级到 `v0.2.0`，才能让多个 Edge 在同一通道排队并按 FIFO 配对。Target 的 `pool` 默认仍为 `1`。 |
-| `v0.3.0` | 单 Target 多 Edge 的按需会话扩容。`tunnel.pool: 0` 时，Target 每完成一个配对就建立下一条独立 WSS 会话，最多 65,535 条；保留固定池 `1–65535`。 | 推荐升级 Target 到 `v0.3.0` 并把 `pool` 设为 `0`。Relay/Edge 可保持 `v0.2.0`，但完整的运行状态和文案建议三端最终统一到 `v0.3.0`。 |
-| `v0.3.1` | Relay 将未配对 Target 保留为长期热备，消除自动池备用会话因配对/握手超时产生的断开重连假告警；Target 热备等待不再受短握手期限影响，取消时仍立即退出；每个池槽只扩容一次，避免重连累积 Socket；WebUI 默认从 `9090` 自动避让端口并在就绪后打开浏览器；补充多 Edge 与网络故障测试。 | **必须升级 Relay 和 Target** 才能完整消除备用 Target 的接入/断开循环及长期 Socket 增殖风险。Edge 协议兼容，可滚动升级。服务器应固定 WebUI 端口并使用 `--open-browser=false`。 |
+| `v0.1.0`–`v0.3.1` | v1 punch 模型：全局 Relay token + 每条路由的 `secret` 与 `channel`。若仍停留在这些版本，见文末归档说明。 | v2 不会读取 v1 文件。 |
+| `v0.4.0`（v2） | 角色改为 `relay` / `target` / `edge`。一个 Token = 一个 Target + N 个 Edge。Target 发布服务目录，Edge 勾选映射。Token 轮换宽限、JSONL 审计、单进程多组、元数据热刷新。 | 每份 `molex.json` 都要重建。Relay、Target、Edge 一起升级。 |
 
-## 升级哪些端
+## 从 v1（`≤v0.3.1`）升到 v2
 
-目标拓扑为：
+v2 **不会**自动迁移。`mode: "punch"` 以及 `role` / `secret` / `tunnel` 字段会导致启动错误，并指向本文。
 
-```text
-Edge 1 ─┐
-Edge 2 ─┼──> Relay 1 ───> Target 1
-Edge N ─┘
-```
+1. 下载 v2 包并用 `SHA256SUMS` 校验。
+2. 备份每份 `molex.json` 和 Relay 的 web-password。旧 JSON 不能原样继续用。
+3. Relay：`molex config init --mode relay --force`。启动 `molex web`，设置管理密码，为每个信任组创建一个 Token。原来的一对 `secret` + `channel` 对应一个 Token。
+4. 原 Target 机器：`molex config init --mode target --force`。`remote` 填同一 `wss://…/ws/session`，粘贴 Token，把旧的 `tunnel.local`（以及多规则里的各个 `local`）逐条加为已发布服务。
+5. 原 Edge 机器：`molex config init --mode edge --force`。粘贴同一 Token，启动后把已发布服务映射到原来使用的本地端口。
+6. 废弃 v1 的 `secret` 与 `channel`，它们不再是 v2 凭据。
+7. 在 Relay 控制台确认：每个 Token 一个 Target、Edge 在线、密文计数在增长，并从每条 Edge 映射做一次 TCP 检查。
 
-| 当前版本 | Relay | Target | Edge | 结果 |
-| --- | --- | --- | --- | --- |
-| `v0.1.0` | 必须升级到 `>=v0.2.0` | 建议升级 | 可暂不升级 | 旧 Relay 不支持同一路由多 Edge 队列。 |
-| `v0.2.0` | 可暂不升级 | 升级到 `v0.3.0` | 可暂不升级 | Target 使用 `pool: 0` 后可按需接入多个 Edge；协议仍兼容。 |
-| 混合运行 | `v0.3.0` | `v0.3.0` | `v0.2.0` 或 `v0.3.0` | 适合滚动升级；建议最终三端统一版本。 |
-| 修复 `v0.3.0` 热备重连 | 升级到 `v0.3.1` | 升级到 `v0.3.1` | 可保持 `v0.3.0` | Relay 与 Target 分别修复配对等待、握手期限和池槽扩容。 |
+v1 与 v2 不能混跑。hello、凭据和目录协议都不同。按 Token 组整体切换（先 Relay，再该组的 Target 与 Edge）。
 
-Relay 不需要知道 Target 的会话池数量，也不解密端到端载荷；因此 `v0.2.0` Relay 可以转发 `v0.3.0` Target 新建立的独立会话。Edge 与 Target 必须继续保持相同的 `secret`、`token`、`remote` 和 `tunnel.remote`，角色必须互补。
-
-## 配置迁移
-
-### 从 `v0.2.0` 升级 Target
-
-备份原配置后，将 Target 的池大小改为 `0`：
+### v2 配置示例
 
 ```json
 {
-  "mode": "punch",
-  "role": "target",
-  "secret": "与 Edge 相同的端到端密钥",
-  "token": "与 Relay 相同的令牌",
-  "remote": "wss://molex.example.com/ws/session",
-  "tunnel": {
-    "local": "127.0.0.1:22",
-    "remote": "home-ssh",
-    "name": "home-target",
-    "pool": 0
-  }
+  "mode": "relay",
+  "listen": "127.0.0.1:8080",
+  "tokens": [{ "id": "tok-office", "token": "mx2_generated-value", "note": "office" }]
 }
 ```
 
-含义：
+```json
+{
+  "mode": "target",
+  "remote": "wss://molex.example.com/ws/session",
+  "token": "mx2_generated-value",
+  "services": [{ "id": "svc-ssh", "name": "ssh", "address": "127.0.0.1:22" }]
+}
+```
 
-- `0`：按需扩容，推荐用于一个 Target 服务多个 Edge。
-- `1`：固定一条会话，适合单 Edge 或保守迁移。
-- `N`：预先建立 N 条独立会话，范围 `1–65535`。
+```json
+{
+  "mode": "edge",
+  "remote": "wss://molex.example.com/ws/session",
+  "token": "mx2_generated-value",
+  "mappings": [{ "service": "svc-ssh", "port": 2222 }]
+}
+```
 
-多规则配置中，每条 Target 规则也可以单独设置 `pool`；未填写时使用自动模式。
+## 已在 v2 上的后续操作
 
-### 从 `v0.1.0` 升级
+Token 轮换（`POST /api/tokens/:id/rotate` 或 Relay 控制台的「轮换」）会让旧值在 1–30 天内继续有效（默认 3 天）。请在到期前更新所有 Target 和 Edge。审计只记录 token id。
 
-`molex.json` 保持向后兼容。先升级 Relay，再升级客户端；不要把 `secret`、`token` 或 Web 管理密码写入公开脚本。首次运行的 WebUI 会引导创建管理密码，不再要求手工创建 `web-password`。
+单个 Target 或 Edge 进程可通过 `tokens[]` 加入多组。用 `services[].groups` 限制服务可见性。加入多组时，Edge 映射必须带 `group`。
 
-## 推荐升级步骤
+Linux Relay 保活：`deploy/molex-relay.service`。没有 systemd 时：`deploy/molex-keepalive.sh`。
 
-1. 下载对应平台的 `v0.3.1` 包，并用 `SHA256SUMS` 校验完整性。
-2. 备份 Relay、Target、Edge 的 `molex.json` 和 Web 管理密码文件。
-3. 先升级 Relay：停止旧进程，替换二进制，启动并检查本机 `/healthz`。
-4. 升级 Target：替换二进制，将 `tunnel.pool` 改为 `0`，启动 WebUI 并确认状态为运行中。
-5. 升级 Edge：逐台替换二进制并启动。Edge 只有在安全路由就绪后才会显示本地监听。
-6. 在 Relay WebUI 中确认多个 Edge 均显示为 `paired`，名称相同的节点由不同 peer ID 区分。
-7. 从每个 Edge 的本地端口发起一次 TCP 测试，并确认目标服务收到请求。
+## 从 v2 回滚
 
-生产环境可以滚动升级。升级期间短暂断线会触发客户端退避重连；不要同时停止唯一的 Relay 和唯一的 Target。若必须升级 Relay，先准备好新进程再切换 Caddy 上游，以缩短中断时间。
+1. 停止 v2 进程。
+2. 恢复 v1 二进制和已备份的 punch 配置。
+3. 把 Caddy 指回旧 Relay。v2 Token 不能用于 v1，v1 secret 也不能用于 v2。
 
-## 回滚
+## v2 切换验收
 
-如果升级后出现异常：
+- [ ] `molex version` 显示 v2 构建。
+- [ ] `molex config check` 接受新文件，并拒绝残留的 punch 文件。
+- [ ] Relay 控制台：Token 列表、每 Token 一个 Target、Edge 在线。
+- [ ] Target 目录与已发布服务一致；Edge 仅在运行中显示监听。
+- [ ] 至少一条映射的 TCP 检查通过。
+- [ ] 重复 Target 被拒绝；停用 Token 会断开整组。
+- [ ] 数据面与管理面 `/healthz` 成功。
 
-1. 停止当前 Target。
-2. 恢复备份的二进制和配置；把 `pool` 改回 `1` 可回到单会话模式。
-3. 保持 Relay token、端到端 secret、channel 和 WSS URL 不变。
-4. 启动旧 Target，等待 Edge 自动重连，再检查 Relay WebUI 的配对状态。
+详见[使用手册](user-guide.zh-CN.md)、[架构与协议](architecture.md)和[测试说明](testing.md)。
 
-配置文件格式没有破坏性变化；`pool: 0` 仅由支持按需池的 `v0.3.0` Target 解释。旧版 Target 不理解自动池时，请使用 `pool: 1`。
+## 归档：v0.1.0–v0.3.1（仅 v1）
 
-## 升级验收清单
+仅在仍于 v1 各版本之间迁移、尚未切到 v2 时使用。
 
-- [ ] `molex version` 显示期望版本。
-- [ ] Relay、Target、Edge 的 `remote`、`token`、`secret` 和 channel 配置一致。
-- [ ] Target 使用 `pool: 0` 或明确的固定池大小。
-- [ ] Relay WebUI 显示每条连接的来源 IP、端点、角色、状态和 peer ID。
-- [ ] 多个 Edge 可以同时建立 TCP 连接，数据没有串流。
-- [ ] 停止并重新启动 Target 后，Edge 能收到指导性重连提示并恢复。
-- [ ] Edge 在路由未就绪时显示“未监听”，没有误报为正在监听。
-- [ ] 检查 `/healthz`、服务日志和系统资源，确认没有异常的 Socket 或文件描述符增长。
+| 版本 | 说明 |
+| --- | --- |
+| `v0.1.0` | 每条不透明路由基本一对 Edge/Target。 |
+| `v0.2.0` | FIFO 队列；多 Edge 同通道需要 Relay `>=v0.2.0`。 |
+| `v0.3.0` | `tunnel.pool: 0` 按需 Target 会话。 |
+| `v0.3.1` | 长期 Target 热备；升级 Relay 与 Target 以消除热备抖动。 |
 
-详见[完整图文使用手册](user-guide.zh-CN.md)、[架构与协议](architecture.md)和[测试与发布检查](testing.md)。
+v1 对端必须保持 `secret`、`token`、`remote`、`tunnel.remote` 一致。该布局在 v2 中已废弃。
