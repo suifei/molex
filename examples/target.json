@@ -1,14 +1,18 @@
 {
-  "mode": "punch",
-  "role": "target",
-  "secret": "mx1_replace-with-the-shared-payload-secret",
-  "token": "mx1_replace-with-the-relay-token",
-  "listen": "",
+  "mode": "target",
   "remote": "wss://molex.example.com/ws/session",
-  "tunnel": {
-    "local": "127.0.0.1:22",
-    "remote": "home-ssh",
-    "name": "home-target",
-    "pool": 0
-  }
+  "token": "mx2_replace-with-the-relay-token",
+  "name": "home-target",
+  "services": [
+    {
+      "id": "svc-web",
+      "name": "web",
+      "address": "10.188.200.16:30927"
+    },
+    {
+      "id": "svc-ssh",
+      "name": "ssh",
+      "address": "127.0.0.1:22"
+    }
+  ]
 }

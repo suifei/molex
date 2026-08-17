@@ -33,6 +33,8 @@ type Options struct {
 	Listen            string
 	AutoListen        bool
 	ConfigPath        string
+	Mode              string
+	ModeLocked        bool
 	Password          string
 	SetupPasswordPath string
 	AutoStart         bool
@@ -47,6 +49,10 @@ type Server struct {
 	manager      *service.Manager
 	handler      http.Handler
 	assets       fs.FS
+	modeMu       sync.RWMutex
+	mode         string
+	modeLocked   bool
+	bootCSRF     string
 	authMu       sync.RWMutex
 	passwordHash [32]byte
 	setupPending bool
@@ -64,6 +70,10 @@ func New(options Options) (*Server, error) {
 	if options.ConfigPath == "" {
 		options.ConfigPath = defaultConfigPath
 	}
+	if options.Mode == "" {
+		options.Mode = config.ModeRelay
+		options.ModeLocked = true
+	}
 	if options.SessionTTL <= 0 {
 		options.SessionTTL = defaultSessionTTL
 	}
@@ -76,17 +86,21 @@ func New(options Options) (*Server, error) {
 	if err := validateWebListen(options.Listen); err != nil {
 		return nil, err
 	}
-	setupPending := options.Password == ""
-	if setupPending {
-		if options.SetupPasswordPath == "" {
-			return nil, errors.New("web password is required unless first-run setup is enabled")
-		}
-	} else {
-		if len(options.Password) < 12 {
-			return nil, errors.New("web password must contain at least 12 characters")
-		}
-		if len(options.Password) > 1024 {
-			return nil, errors.New("web password must contain at most 1024 characters")
+	setupPending := false
+	if options.Mode == config.ModeRelay {
+		// Only the relay console authenticates with a management password.
+		setupPending = options.Password == ""
+		if setupPending {
+			if options.SetupPasswordPath == "" {
+				return nil, errors.New("web password is required unless first-run setup is enabled")
+			}
+		} else {
+			if len(options.Password) < 12 {
+				return nil, errors.New("web password must contain at least 12 characters")
+			}
+			if len(options.Password) > 1024 {
+				return nil, errors.New("web password must contain at most 1024 characters")
+			}
 		}
 	}
 
@@ -94,10 +108,17 @@ func New(options Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open embedded web assets: %w", err)
 	}
+	bootCSRF, err := randomToken()
+	if err != nil {
+		return nil, fmt.Errorf("generate local console token: %w", err)
+	}
 
 	server := &Server{
 		options:      options,
 		assets:       assets,
+		mode:         options.Mode,
+		modeLocked:   options.ModeLocked,
+		bootCSRF:     bootCSRF,
 		passwordHash: hashToken(options.Password),
 		setupPending: setupPending,
 		sessions:     newSessionStore(options.Now),
@@ -105,8 +126,46 @@ func New(options Options) (*Server, error) {
 		subscribers:  make(map[chan telemetry.Event]struct{}),
 	}
 	server.manager = service.NewManager(telemetry.ReporterFunc(server.publish), options.Logger)
+	if options.Mode == config.ModeRelay {
+		// Relay administration is audited to a durable JSONL file beside
+		// the configuration.
+		server.manager.SetAuditPath(telemetry.DefaultAuditPath(options.ConfigPath))
+	}
 	server.handler = server.securityHeaders(server.routes())
 	return server, nil
+}
+
+// consoleMode returns the fixed role this console manages. Before the first
+// configuration is written the console stays unlocked so the browser can
+// bootstrap an edge or target role once.
+func (s *Server) consoleMode() string {
+	s.modeMu.RLock()
+	defer s.modeMu.RUnlock()
+	return s.mode
+}
+
+func (s *Server) consoleModeLocked() bool {
+	s.modeMu.RLock()
+	defer s.modeMu.RUnlock()
+	return s.modeLocked
+}
+
+func (s *Server) relayConsole() bool {
+	return s.consoleMode() == config.ModeRelay
+}
+
+func (s *Server) lockConsoleMode(mode string) error {
+	s.modeMu.Lock()
+	defer s.modeMu.Unlock()
+	if s.modeLocked {
+		return errors.New("the console role is already configured")
+	}
+	if mode != config.ModeTarget && mode != config.ModeEdge {
+		return errors.New("the browser can only bootstrap target or edge roles; create relay configurations with `molex config init --mode relay`")
+	}
+	s.mode = mode
+	s.modeLocked = true
+	return nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -206,20 +265,46 @@ func listenWebConsole(address string, auto bool) (net.Listener, error) {
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/api/session", s.handleSession)
-	mux.HandleFunc("/api/setup", s.handleSetup)
-	mux.HandleFunc("/api/login", s.handleLogin)
-	mux.HandleFunc("/api/logout", s.requireSession(s.handleLogout))
-	mux.HandleFunc("/api/config", s.requireSession(s.handleConfig))
-	mux.HandleFunc("/api/config/validate", s.requireSession(s.handleValidateConfig))
-	mux.HandleFunc("/api/runtime/start", s.requireSession(s.handleStart))
-	mux.HandleFunc("/api/runtime/stop", s.requireSession(s.handleStop))
-	mux.HandleFunc("/api/runtime/status", s.requireSession(s.handleStatus))
-	mux.HandleFunc("/api/events", s.requireSession(s.handleEvents))
-	mux.HandleFunc("/api/events/stream", s.requireSession(s.handleEventStream))
-	mux.HandleFunc("/api/secret", s.requireSession(s.handleGenerateSecret))
+	mux.HandleFunc("/api/session", s.localOnly(s.handleSession))
+	mux.HandleFunc("/api/setup", s.relayOnly(s.handleSetup))
+	mux.HandleFunc("/api/login", s.relayOnly(s.handleLogin))
+	mux.HandleFunc("/api/logout", s.relayOnly(s.requireAccess(s.handleLogout)))
+	mux.HandleFunc("/api/bootstrap", s.localOnly(s.handleBootstrap))
+	mux.HandleFunc("/api/config", s.requireAccess(s.handleConfig))
+	mux.HandleFunc("/api/config/validate", s.requireAccess(s.handleValidateConfig))
+	mux.HandleFunc("/api/runtime/start", s.requireAccess(s.handleStart))
+	mux.HandleFunc("/api/runtime/stop", s.requireAccess(s.handleStop))
+	mux.HandleFunc("/api/runtime/status", s.requireAccess(s.handleStatus))
+	mux.HandleFunc("/api/events", s.requireAccess(s.handleEvents))
+	mux.HandleFunc("/api/events/stream", s.requireAccess(s.handleEventStream))
+	mux.HandleFunc("/api/tokens", s.relayOnly(s.requireAccess(s.handleTokens)))
+	mux.HandleFunc("/api/tokens/", s.relayOnly(s.requireAccess(s.handleTokenItem)))
+	mux.HandleFunc("/api/peers/disconnect", s.relayOnly(s.requireAccess(s.handleDisconnectPeer)))
+	mux.HandleFunc("/api/services", s.modeOnly(config.ModeTarget, s.requireAccess(s.handleServices)))
+	mux.HandleFunc("/api/mappings", s.modeOnly(config.ModeEdge, s.requireAccess(s.handleMappings)))
+	mux.HandleFunc("/api/ports/free", s.modeOnly(config.ModeEdge, s.requireAccess(s.handleFreePort)))
 	mux.HandleFunc("/", s.handleStatic)
 	return mux
+}
+
+func (s *Server) relayOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.relayConsole() {
+			writeError(w, http.StatusNotFound, "this console does not manage a relay")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) modeOnly(mode string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.consoleMode() != mode {
+			writeError(w, http.StatusNotFound, fmt.Sprintf("this console does not manage a %s", mode))
+			return
+		}
+		next(w, r)
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

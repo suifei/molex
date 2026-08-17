@@ -13,11 +13,10 @@ import (
 )
 
 func newConnectCommand() *cobra.Command {
-	var configPath, remote, secret, token, role, listen, local, channel, name string
-	var pool int
+	var configPath, remote, token, name string
 	command := &cobra.Command{
 		Use:   "connect",
-		Short: "Connect an edge or target to the relay",
+		Short: "Connect a target or edge to the relay",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg := config.Default()
 			loaded, err := config.Load(configPath)
@@ -26,18 +25,12 @@ func newConnectCommand() *cobra.Command {
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
-			cfg.Mode = config.ModePunch
-			applyStringFlag(cmd, "remote", &cfg.Remote, remote)
-			applyStringFlag(cmd, "secret", &cfg.Secret, secret)
-			applyStringFlag(cmd, "token", &cfg.Token, token)
-			applyStringFlag(cmd, "role", &cfg.Role, role)
-			applyStringFlag(cmd, "listen", &cfg.Listen, listen)
-			applyStringFlag(cmd, "local", &cfg.Tunnel.Local, local)
-			applyStringFlag(cmd, "channel", &cfg.Tunnel.Remote, channel)
-			applyStringFlag(cmd, "name", &cfg.Tunnel.Name, name)
-			if cmd.Flags().Changed("pool") {
-				cfg.Tunnel.Pool = pool
+			if cfg.Mode == config.ModeRelay {
+				return fmt.Errorf("%s is a relay configuration; use `molex serve` for the relay and mode \"target\" or \"edge\" for clients", configPath)
 			}
+			applyStringFlag(cmd, "remote", &cfg.Remote, remote)
+			applyStringFlag(cmd, "token", &cfg.Token, token)
+			applyStringFlag(cmd, "name", &cfg.Name, name)
 			cfg = cfg.Normalized()
 			if err := cfg.Validate(); err != nil {
 				return err
@@ -55,14 +48,8 @@ func newConnectCommand() *cobra.Command {
 	}
 	command.Flags().StringVarP(&configPath, "config", "c", "molex.json", "configuration file")
 	command.Flags().StringVar(&remote, "remote", "", "relay ws:// or wss:// endpoint")
-	command.Flags().StringVar(&secret, "secret", "", "end-to-end shared secret")
-	command.Flags().StringVar(&token, "token", "", "optional relay admission token")
-	command.Flags().StringVar(&role, "role", "", "client role: edge or target")
-	command.Flags().StringVar(&listen, "listen", "", "local edge listen address")
-	command.Flags().StringVar(&local, "local", "", "target service address")
-	command.Flags().StringVar(&channel, "channel", "", "shared rendezvous channel")
+	command.Flags().StringVar(&token, "token", "", "relay access token")
 	command.Flags().StringVar(&name, "name", "", "client name shown in the Relay console")
-	command.Flags().IntVar(&pool, "pool", 0, "target session pool size (0 for adaptive, or 1-65535)")
 	command.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return fmt.Errorf("connect flags: %w", err) })
 	return command
 }

@@ -13,7 +13,7 @@ import (
 )
 
 func newServeCommand() *cobra.Command {
-	var configPath, listen, token string
+	var configPath, listen string
 	command := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the public WebSocket relay",
@@ -25,12 +25,11 @@ func newServeCommand() *cobra.Command {
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
-			cfg.Mode = config.ModeRelay
+			if cfg.Mode != config.ModeRelay {
+				return fmt.Errorf("%s is a %q configuration; `molex serve` requires mode \"relay\"", configPath, cfg.Mode)
+			}
 			if cmd.Flags().Changed("listen") {
 				cfg.Listen = listen
-			}
-			if cmd.Flags().Changed("token") {
-				cfg.Token = token
 			}
 			cfg = cfg.Normalized()
 			if err := cfg.Validate(); err != nil {
@@ -38,19 +37,34 @@ func newServeCommand() *cobra.Command {
 			}
 
 			logger := slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{Level: slog.LevelInfo}))
-			reporter := telemetry.ReporterFunc(func(event telemetry.Event) {
+			logReporter := telemetry.ReporterFunc(func(event telemetry.Event) {
 				if event.Transient {
 					return
 				}
 				logger.Info(event.Message, "state", event.State, "listen", event.Listen)
 			})
-			server := relay.New(relay.Options{Listen: cfg.Listen, Token: cfg.Token, Logger: logger, Reporter: reporter})
+			// Relay lifecycle events are audited to a durable JSONL file
+			// beside the configuration.
+			reporter := telemetry.MultiReporter(logReporter, telemetry.NewAuditWriter(telemetry.DefaultAuditPath(configPath)))
+			credentials := make([]relay.Credential, 0, len(cfg.Tokens))
+			for _, token := range cfg.Tokens {
+				credentials = append(credentials, relay.Credential{
+					ID:              token.ID,
+					Token:           token.Token,
+					Disabled:        token.Disabled,
+					Previous:        token.PreviousToken,
+					PreviousExpires: token.PreviousExpiresAt,
+				})
+			}
+			if len(credentials) == 0 {
+				logger.Warn("No access tokens are configured; every client will be rejected. Create tokens in the relay web console or configuration file.")
+			}
+			server := relay.New(relay.Options{Listen: cfg.Listen, Tokens: credentials, Logger: logger, Reporter: reporter})
 			return server.Run(cmd.Context())
 		},
 	}
 	command.Flags().StringVarP(&configPath, "config", "c", "molex.json", "configuration file")
 	command.Flags().StringVar(&listen, "listen", "", "relay listen address")
-	command.Flags().StringVar(&token, "token", "", "optional relay admission token")
 	command.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return fmt.Errorf("serve flags: %w", err) })
 	return command
 }

@@ -27,12 +27,39 @@ type RecordConn struct {
 	txPrefix [4]byte
 	rxPrefix [4]byte
 
+	// hello and relayToken enable in-session relay-metadata refreshes bound
+	// to this connection's handshake.
+	hello      *Hello
+	relayToken string
+
 	writeMu sync.Mutex
 	readMu  sync.Mutex
 	txSeq   uint64
 	rxSeq   uint64
 	readBuf bytes.Reader
 	close   sync.Once
+}
+
+// RefreshRelayMetadata re-sends operator-facing metadata to the relay over
+// the encrypted ping channel, so consoles reflect service and mapping count
+// changes without waiting for a reconnect.
+func (c *RecordConn) RefreshRelayMetadata(metadata RelayMetadata) error {
+	if c.hello == nil {
+		return errors.New("connection has no handshake context")
+	}
+	frames, err := SealRelayMetadata(c.hello, c.relayToken, metadata)
+	if err != nil {
+		return err
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	deadline := time.Now().Add(10 * time.Second)
+	for _, frame := range frames {
+		if err := c.ws.WriteControl(websocket.PingMessage, frame, deadline); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func OpenSecureClient(ctx context.Context, ws *websocket.Conn, secret []byte, channel string, role Role) (*RecordConn, error) {
@@ -115,6 +142,8 @@ func OpenSecureClientWithMetadata(ctx context.Context, ws *websocket.Conn, secre
 	if err != nil {
 		return nil, err
 	}
+	conn.hello = hello
+	conn.relayToken = relayToken
 	if err := conn.SetDeadline(secureHandshakeDeadline(ctx)); err != nil {
 		conn.Close()
 		return nil, err

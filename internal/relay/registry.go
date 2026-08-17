@@ -13,7 +13,9 @@ type participant struct {
 	id          string
 	ip          string
 	proxied     bool
-	metadata    protocol.RelayMetadata
+	metadata    atomic.Pointer[protocol.RelayMetadata]
+	tokenID     string
+	legacyToken bool
 	routeID     string
 	connectedAt time.Time
 	conn        *websocket.Conn
@@ -27,6 +29,12 @@ type participant struct {
 	peer        atomic.Pointer[participant]
 	bridgeOwner bool
 	shutdown    sync.Once
+	armedCode   atomic.Int32
+	armedText   atomic.Value
+	lastMeta    atomic.Int64
+	metaMu      sync.Mutex
+	pendingMeta [][]byte
+	metaFlush   bool
 
 	bytesReceived  atomic.Uint64
 	bytesSent      atomic.Uint64
@@ -99,8 +107,24 @@ func (p *participant) close() {
 	p.closeWith(websocket.CloseNormalClosure, "")
 }
 
+// armClose records the close code and reason that must win no matter which
+// concurrent path (bridge teardown, read failure, shutdown) closes this
+// participant first. Kicks and token revocations use it so clients always
+// receive the actionable close reason.
+func (p *participant) armClose(code int, reason string) {
+	if p.armedCode.CompareAndSwap(0, int32(code)) {
+		p.armedText.Store(reason)
+	}
+}
+
 func (p *participant) closeWith(code int, reason string) {
 	p.shutdown.Do(func() {
+		if armed := p.armedCode.Load(); armed != 0 {
+			code = int(armed)
+			if text, ok := p.armedText.Load().(string); ok {
+				reason = text
+			}
+		}
 		close(p.done)
 		if code != 0 {
 			_ = p.conn.WriteControl(websocket.CloseMessage,
@@ -121,6 +145,35 @@ func (p *participant) closed() bool {
 	default:
 		return false
 	}
+}
+
+func (p *participant) currentMetadata() protocol.RelayMetadata {
+	if metadata := p.metadata.Load(); metadata != nil {
+		return *metadata
+	}
+	return protocol.RelayMetadata{}
+}
+
+// mergeMetadata overwrites only the fields present in the refresh so a
+// partial update cannot erase previously reported labels.
+func (p *participant) mergeMetadata(update protocol.RelayMetadata) {
+	current := p.currentMetadata()
+	if update.Name != "" {
+		current.Name = update.Name
+	}
+	if update.Endpoint != "" {
+		current.Endpoint = update.Endpoint
+	}
+	if update.RelayEndpoint != "" {
+		current.RelayEndpoint = update.RelayEndpoint
+	}
+	if update.Platform != "" {
+		current.Platform = update.Platform
+	}
+	if update.Instance != "" {
+		current.Instance = update.Instance
+	}
+	p.metadata.Store(&current)
 }
 
 func (r *registry) remove(p *participant) bool {

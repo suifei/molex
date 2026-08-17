@@ -1,29 +1,32 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowClockwise,
-	DownloadSimple,
-	ArrowRight,
+  ArrowRight,
   Check,
   CircleNotch,
   CloudArrowUp,
+  Copy,
   Desktop,
+  DownloadSimple,
   Eye,
   EyeSlash,
   FloppyDisk,
-  Key,
+  HardDrives,
   LockKey,
   Moon,
   Play,
+  Plugs,
   PlugsConnected,
+  Plus,
   ShieldCheck,
   SignOut,
   Stop,
   Sun,
   TerminalWindow,
-  Plus,
-  Trash,
   Translate,
+  Trash,
   Warning,
+  WifiSlash,
 } from "@phosphor-icons/react";
 import { api } from "./api";
 import {
@@ -35,23 +38,46 @@ import {
   secretActionLabel,
 } from "./i18n";
 import type { Locale } from "./i18n";
-import type { Config, Mode, RelayPeer, Role, RuntimeEvent, RuntimeStatus } from "./types";
-import type { TunnelRule } from "./types";
-
-const emptyConfig: Config = {
-  mode: "punch",
-  role: "edge",
-  secret: "",
-  token: "",
-  listen: "127.0.0.1:2222",
-  remote: "wss://molex.example.com/ws/session",
-  tunnel: { local: "127.0.0.1:22", remote: "home-ssh", name: "", pool: 0, rules: [] },
-};
+import type {
+  Config,
+  MappingEntry,
+  Mode,
+  RelayPeer,
+  RuntimeEvent,
+  RuntimeStatus,
+  ServiceEntry,
+  SessionState,
+  TokenEntry,
+} from "./types";
 
 type Theme = "dark" | "light";
 export type ThemePreference = Theme | "system";
 
 export const THEME_STORAGE_KEY = "molex:theme";
+
+const emptyStatus: RuntimeStatus = { state: "idle", message: "Ready" };
+
+function emptyConfigFor(mode: Mode): Config {
+  if (mode === "relay") return { mode, listen: "127.0.0.1:8080", tokens: [] };
+  return { mode, remote: "wss://molex.example.com/ws/session", token: "", name: "" };
+}
+
+function clientGroupList(config: Config): TokenEntry[] {
+  if ((config.tokens ?? []).length > 0) return config.tokens ?? [];
+  return [{ id: "", token: config.token ?? "" }];
+}
+
+function groupsToConfig(groups: TokenEntry[]): Pick<Config, "token" | "tokens"> {
+  const cleaned = groups.map((group) => ({ id: group.id.trim(), token: group.token }));
+  if (cleaned.length <= 1 && !cleaned[0]?.id) {
+    return { token: cleaned[0]?.token ?? "", tokens: undefined };
+  }
+  return { token: undefined, tokens: cleaned };
+}
+
+function mappingKey(group: string | undefined, service: string): string {
+  return `${group ?? ""}\0${service}`;
+}
 
 function initialThemePreference(): ThemePreference {
   const saved = localStorage.getItem(THEME_STORAGE_KEY);
@@ -64,8 +90,9 @@ function nextThemePreference(preference: ThemePreference): ThemePreference {
 }
 
 function App() {
-  const [config, setConfig] = useState<Config>(emptyConfig);
-  const [status, setStatus] = useState<RuntimeStatus>({ state: "idle", message: "Ready" });
+  const [session, setSession] = useState<SessionState | null>(null);
+  const [config, setConfig] = useState<Config>(emptyConfigFor("edge"));
+  const [status, setStatus] = useState<RuntimeStatus>(emptyStatus);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [themePreference, setThemePreference] = useState<ThemePreference>(initialThemePreference);
   const [systemTheme, setSystemTheme] = useState<Theme>(() =>
@@ -75,54 +102,61 @@ function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [setupRequired, setSetupRequired] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [consoleLoading, setConsoleLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [showSecret, setShowSecret] = useState(false);
-  const [showToken, setShowToken] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [notice, setNotice] = useState(false);
-	const [relayDomain, setRelayDomain] = useState("molex.example.com");
-	const [adminDomain, setAdminDomain] = useState("admin.molex.example.com");
-	const [now, setNow] = useState(() => Date.now());
-	const refreshGeneration = useRef(0);
+  const [liveDown, setLiveDown] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const refreshGeneration = useRef(0);
 
   const text = copy[locale];
   const resolvedTheme = themePreference === "system" ? systemTheme : themePreference;
-
+  const mode: Mode = session?.mode ?? "edge";
+  const modeReady = Boolean(session && (session.modeLocked || !session.authRequired));
   const isRunning = ["starting", "connecting", "running", "stopping"].includes(status.state);
-  const isRelay = config.mode === "relay";
-  const relayPeers = status.peers ?? [];
-  const hasLocalListener = isRelay || config.role === "edge";
-  const runtimeListen = hasLocalListener
-    ? status.state === "running" ? status.listen || config.listen : text.notListening
-    : text.notExposed;
 
   const refreshRuntime = useCallback(async () => {
-		const generation = ++refreshGeneration.current;
+    const generation = ++refreshGeneration.current;
     const [nextStatus, nextEvents] = await Promise.all([api.getStatus(), api.getEvents()]);
-		if (generation !== refreshGeneration.current) return;
+    if (generation !== refreshGeneration.current) return;
     setStatus(nextStatus);
     setEvents(nextEvents.slice(-20));
   }, []);
 
-  const loadConsole = useCallback(async () => {
-    const [loadedConfig, loadedStatus, loadedEvents] = await Promise.all([api.getConfig(), api.getStatus(), api.getEvents()]);
-    setConfig({ ...emptyConfig, ...loadedConfig, tunnel: { ...emptyConfig.tunnel, ...loadedConfig.tunnel, rules: loadedConfig.tunnel.rules ?? [] } });
-    setStatus(loadedStatus);
-    setEvents(loadedEvents.slice(-20));
+  const loadConsole = useCallback(async (consoleMode: Mode) => {
+    setConsoleLoading(true);
+    try {
+      const [loadedConfig, loadedStatus, loadedEvents] = await Promise.all([
+        api.getConfig(),
+        api.getStatus(),
+        api.getEvents(),
+      ]);
+      setConfig({ ...emptyConfigFor(consoleMode), ...loadedConfig, mode: consoleMode });
+      setStatus(loadedStatus);
+      setEvents(loadedEvents.slice(-20));
+    } finally {
+      setConsoleLoading(false);
+    }
   }, []);
 
   useEffect(() => {
     let mounted = true;
     void api.getSession()
-      .then(async (session) => {
+      .then((loaded) => {
         if (!mounted) return;
-				if (session.authenticated) {
-					await loadConsole();
-					if (mounted) setAuthenticated(true);
-				} else {
-					setSetupRequired(Boolean(session.setupRequired));
-					setAuthenticated(false);
-				}
+        setSession(loaded);
+        if (loaded.authenticated) {
+          setAuthenticated(true);
+          if (loaded.modeLocked || !loaded.authRequired) {
+            // Render the console immediately with skeletons while the
+            // configuration and runtime state stream in.
+            void loadConsole(loaded.mode).catch((error: unknown) => setErrors([messageFrom(error)]));
+          }
+        } else {
+          setSetupRequired(Boolean(loaded.setupRequired));
+          setAuthenticated(false);
+        }
       })
       .catch((error: unknown) => {
         if (!mounted) return;
@@ -136,30 +170,35 @@ function App() {
   }, [loadConsole]);
 
   useEffect(() => {
-    if (!authenticated) return;
+    if (!authenticated || !session?.modeLocked) return;
     let mounted = true;
-    const unsubscribe = api.subscribe((event) => {
-      if (!mounted) return;
-			refreshGeneration.current++;
-			setStatus((current) => applyRuntimeEvent(current, event));
-			if (!event.transient) {
-				setEvents((current) => [...current.slice(-19), event]);
-			}
+    const unsubscribe = api.subscribe({
+      onEvent: (event) => {
+        if (!mounted) return;
+        setLiveDown(false);
+        refreshGeneration.current++;
+        setStatus((current) => applyRuntimeEvent(current, event));
+        if (!event.transient) {
+          setEvents((current) => [...current.slice(-19), event]);
+        }
+      },
+      onOpen: () => mounted && setLiveDown(false),
+      onError: () => mounted && setLiveDown(true),
     });
-    const interval = window.setInterval(() => void refreshRuntime().catch(() => undefined), 2500);
+    const interval = window.setInterval(() => void refreshRuntime().catch(() => setLiveDown(true)), 2500);
     return () => {
       mounted = false;
       unsubscribe?.();
       window.clearInterval(interval);
     };
-  }, [authenticated, refreshRuntime]);
+  }, [authenticated, session?.modeLocked, refreshRuntime]);
 
-	useEffect(() => {
-		if (!authenticated || !isRelay || relayPeers.length === 0) return;
-		setNow(Date.now());
-		const interval = window.setInterval(() => setNow(Date.now()), 1000);
-		return () => window.clearInterval(interval);
-	}, [authenticated, isRelay, relayPeers.length]);
+  useEffect(() => {
+    if (!authenticated) return;
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [authenticated]);
 
   useEffect(() => {
     const handleUnauthorized = () => {
@@ -203,41 +242,17 @@ function App() {
     setNotice(false);
   };
 
-  const setTunnel = (field: keyof Config["tunnel"], value: Config["tunnel"][keyof Config["tunnel"]]) => {
-    setConfig((current) => ({ ...current, tunnel: { ...current.tunnel, [field]: value } }));
-    setErrors([]);
-    setNotice(false);
-  };
-
-  const rules = config.tunnel.rules ?? [];
-  const updateRule = (index: number, field: keyof TunnelRule, value: string | number) => {
-    const next = rules.map((rule, ruleIndex) => ruleIndex === index ? { ...rule, [field]: value } : rule);
-    setTunnel("rules", next);
-  };
-  const addRule = () => {
-    const index = rules.length + 1;
-    setTunnel("rules", [...rules, {
-      name: `${config.role}-${index}`,
-      listen: config.role === "edge" ? `127.0.0.1:${2221 + index}` : "",
-      local: config.role === "target" ? "127.0.0.1:22" : "",
-      remote: `route-${index}`,
-      pool: 0,
-    }]);
-  };
-  const removeRule = (index: number) => setTunnel("rules", rules.filter((_, ruleIndex) => ruleIndex !== index));
-
-  const validate = async () => {
-    const result = await api.validateConfig(config);
-    setErrors(result.errors);
-    return result.valid;
-  };
-
   const save = async () => {
     setBusy(true);
     setNotice(false);
     try {
-      if (!(await validate())) return;
+      const validation = await api.validateConfig(config);
+      if (!validation.valid) {
+        setErrors(validation.errors);
+        return;
+      }
       await api.saveConfig(config);
+      setErrors([]);
       setNotice(true);
       window.setTimeout(() => setNotice(false), 1800);
     } catch (error) {
@@ -254,7 +269,12 @@ function App() {
       if (isRunning) {
         await api.stop();
       } else {
-        if (!(await validate())) return;
+        const validation = await api.validateConfig(config);
+        if (!validation.valid) {
+          setErrors(validation.errors);
+          return;
+        }
+        setErrors([]);
         await api.start(config);
       }
       await refreshRuntime();
@@ -265,37 +285,15 @@ function App() {
     }
   };
 
-  const generate = async (field: "secret" | "token") => {
-    try {
-      const value = await api.generateSecret();
-      setField(field, value);
-      if (field === "secret") setShowSecret(true);
-      if (field === "token") setShowToken(true);
-    } catch (error) {
-      setErrors([messageFrom(error)]);
-    }
-  };
-
-  const downloadCaddyfile = () => {
-    const relayHost = relayDomain.trim();
-    const adminHost = adminDomain.trim();
-    if (!relayHost || !adminHost) return;
-    const content = `${relayHost} {\n    @molex_session {\n        path /ws/session\n        header Connection *Upgrade*\n        header Upgrade websocket\n    }\n    handle @molex_session {\n        reverse_proxy ${config.listen || "127.0.0.1:8080"}\n    }\n    handle {\n        respond "Hello, world." 200\n    }\n}\n\n${adminHost} {\n    reverse_proxy 127.0.0.1:9090\n}\n`;
-    const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "Caddyfile";
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
   const login = async (password: string) => {
     setBusy(true);
     setErrors([]);
     try {
       await api.login(password);
-      await loadConsole();
+      const refreshed = await api.getSession();
+      setSession(refreshed);
       setAuthenticated(true);
+      void loadConsole(refreshed.mode).catch((error: unknown) => setErrors([messageFrom(error)]));
     } catch (error) {
       setErrors([messageFrom(error)]);
     } finally {
@@ -308,9 +306,11 @@ function App() {
     setErrors([]);
     try {
       await api.setup(password);
-      await loadConsole();
+      const refreshed = await api.getSession();
+      setSession(refreshed);
       setSetupRequired(false);
       setAuthenticated(true);
+      void loadConsole(refreshed.mode).catch((error: unknown) => setErrors([messageFrom(error)]));
     } catch (error) {
       setErrors([messageFrom(error)]);
     } finally {
@@ -322,10 +322,10 @@ function App() {
     setBusy(true);
     try {
       await api.logout();
-			refreshGeneration.current++;
+      refreshGeneration.current++;
       setAuthenticated(false);
-      setConfig(emptyConfig);
-      setStatus({ state: "idle", message: "Ready" });
+      setConfig(emptyConfigFor(mode));
+      setStatus(emptyStatus);
       setEvents([]);
       setErrors([]);
       setNotice(false);
@@ -336,11 +336,20 @@ function App() {
     }
   };
 
-  const routeLabels = isRelay
-    ? [text.wssEntry, text.relayHub, text.pairedPeers]
-    : config.role === "edge"
-      ? [config.listen || text.localPort, text.encryptedHub, config.tunnel.remote || text.channel]
-      : [config.tunnel.remote || text.channel, text.encryptedHub, config.tunnel.local || text.targetService];
+  const chooseRole = async (choice: Mode) => {
+    setBusy(true);
+    setErrors([]);
+    try {
+      const refreshed = await api.bootstrap(choice);
+      setSession(refreshed);
+      setConfig(emptyConfigFor(refreshed.mode));
+      void loadConsole(refreshed.mode).catch((error: unknown) => setErrors([messageFrom(error)]));
+    } catch (error) {
+      setErrors([messageFrom(error)]);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -352,20 +361,20 @@ function App() {
     );
   }
 
-  if (!authenticated) {
-		if (setupRequired) {
-			return (
-				<SetupScreen
-					locale={locale}
-					themePreference={themePreference}
-					busy={busy}
-					errors={errors}
-					onLocaleChange={() => setLocale(locale === "en" ? "zh-CN" : "en")}
-					onThemeChange={() => setThemePreference(nextThemePreference(themePreference))}
-					onSetup={setup}
-				/>
-			);
-		}
+  if (session?.authRequired && !authenticated) {
+    if (setupRequired) {
+      return (
+        <SetupScreen
+          locale={locale}
+          themePreference={themePreference}
+          busy={busy}
+          errors={errors}
+          onLocaleChange={() => setLocale(locale === "en" ? "zh-CN" : "en")}
+          onThemeChange={() => setThemePreference(nextThemePreference(themePreference))}
+          onSetup={setup}
+        />
+      );
+    }
     return (
       <LoginScreen
         locale={locale}
@@ -379,6 +388,36 @@ function App() {
     );
   }
 
+  if (session && !session.modeLocked) {
+    return (
+      <RolePicker
+        locale={locale}
+        themePreference={themePreference}
+        busy={busy}
+        errors={errors}
+        onLocaleChange={() => setLocale(locale === "en" ? "zh-CN" : "en")}
+        onThemeChange={() => setThemePreference(nextThemePreference(themePreference))}
+        onChoose={chooseRole}
+      />
+    );
+  }
+
+  if (!session || !modeReady) {
+    return (
+      <main className="boot-state" aria-live="polite">
+        <div className="boot-mark" />
+        <div className="boot-line" />
+        <span>{text.loading}</span>
+      </main>
+    );
+  }
+
+  const routeLabels: [string, string] = mode === "relay"
+    ? [text.wssEntry, text.pairedPeers]
+    : mode === "target"
+      ? [text.publishedServicesNode, text.wssEntry]
+      : [text.localMappings, text.publishedServicesNode];
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -390,7 +429,7 @@ function App() {
           </div>
         </div>
         <div className="topbar-actions">
-          <span className="console-label">{text.webConsole}{api.isPreview() ? ` · ${text.previewData}` : ""}</span>
+          <span className="console-label">{text.consoleLabels[mode]}{api.isPreview() ? ` · ${text.previewData}` : ""}</span>
           <StatusTag status={status} label={text.states[status.state]} />
           <LanguageButton locale={locale} onClick={() => setLocale(locale === "en" ? "zh-CN" : "en")} />
           <ThemeButton
@@ -398,11 +437,20 @@ function App() {
             preference={themePreference}
             onClick={() => setThemePreference(nextThemePreference(themePreference))}
           />
-          <button type="button" className="icon-button" onClick={() => void logout()} disabled={busy} aria-label={text.logout} title={text.logout}>
-            <SignOut size={18} />
-          </button>
+          {session.authRequired && (
+            <button type="button" className="icon-button" onClick={() => void logout()} disabled={busy} aria-label={text.logout} title={text.logout}>
+              <SignOut size={18} />
+            </button>
+          )}
         </div>
       </header>
+
+      {liveDown && isRunning && (
+        <div className="live-banner" role="status">
+          <WifiSlash size={16} />
+          <span>{text.liveUpdatesLost}</span>
+        </div>
+      )}
 
       <section className={`route-map state-${status.state}`} aria-label={text.currentRouteStatus}>
         <RouteNode label={routeLabels[0]} icon={<TerminalWindow size={19} />} />
@@ -412,159 +460,60 @@ function App() {
           <span>{status.state === "running" ? text.secured : status.state === "connecting" ? text.pairing : text.standby}</span>
         </div>
         <div className="route-segment" aria-hidden="true"><span /></div>
-        <RouteNode label={routeLabels[2]} icon={isRelay ? <PlugsConnected size={19} /> : <CloudArrowUp size={19} />} />
+        <RouteNode label={routeLabels[1]} icon={mode === "relay" ? <PlugsConnected size={19} /> : <CloudArrowUp size={19} />} />
       </section>
 
-      <section className={`workspace ${isRelay ? "relay-workspace" : ""}`}>
-        <div className="config-panel">
-          <div className="panel-heading">
-            <div>
-              <h1>{text.routeConfiguration}</h1>
-              <p>{isRelay ? text.publicRendezvousEndpoint : config.role === "edge" ? text.localAccessEndpoint : text.privateServiceEndpoint}</p>
-            </div>
-            <div className="segmented-control" aria-label={text.mode}>
-              <SegmentButton active={config.mode === "relay"} onClick={() => setField("mode", "relay" as Mode)} disabled={isRunning}>{text.relay}</SegmentButton>
-              <SegmentButton active={config.mode === "punch"} onClick={() => setField("mode", "punch" as Mode)} disabled={isRunning}>{text.client}</SegmentButton>
-            </div>
-          </div>
-
-          {isRelay ? (
-            <div className="form-grid relay-fields">
-              <Field label={text.listenAddress} htmlFor="listen">
-                <input id="listen" value={config.listen} onChange={(event) => setField("listen", event.target.value)} disabled={isRunning} spellCheck={false} />
-              </Field>
-              <SecretField
-                id="token"
-                label={text.admissionToken}
-                locale={locale}
-                value={config.token}
-                visible={showToken}
-                disabled={isRunning}
-                onChange={(value) => setField("token", value)}
-                onToggle={() => setShowToken((value) => !value)}
-                onGenerate={() => void generate("token")}
-              />
-						<div className="field full-width caddy-helper">
-							<div className="rule-manager-heading"><div><span className="field-label">{text.caddySetup}</span><p>{text.caddySetupDescription}</p></div><a className="text-link" href="https://caddyserver.com/docs/install" target="_blank" rel="noreferrer">{text.caddyOfficialGuide}</a></div>
-							<div className="caddy-fields">
-								<label><span>{text.relayDomain}</span><input value={relayDomain} onChange={(event) => setRelayDomain(event.target.value)} disabled={isRunning} spellCheck={false} /></label>
-								<label><span>{text.adminDomain}</span><input value={adminDomain} onChange={(event) => setAdminDomain(event.target.value)} disabled={isRunning} spellCheck={false} /></label>
-								<button type="button" className="button secondary-button" onClick={downloadCaddyfile} disabled={!relayDomain.trim() || !adminDomain.trim()}><DownloadSimple size={17} />{text.downloadCaddyfile}</button>
-							</div>
-						</div>
-            </div>
-          ) : (
-            <div className="form-grid">
-              <div className="field full-width">
-                <span className="field-label">{text.clientRole}</span>
-                <div className="segmented-control role-control" aria-label={text.clientRole}>
-                  <SegmentButton active={config.role === "edge"} onClick={() => setField("role", "edge" as Role)} disabled={isRunning}>{text.edgeListener}</SegmentButton>
-                  <SegmentButton active={config.role === "target"} onClick={() => setField("role", "target" as Role)} disabled={isRunning}>{text.targetService}</SegmentButton>
-                </div>
-              </div>
-              <Field label={text.relayEndpoint} htmlFor="remote" wide>
-                <input id="remote" value={config.remote} onChange={(event) => setField("remote", event.target.value)} disabled={isRunning} spellCheck={false} />
-              </Field>
-							<Field label={text.nodeName} htmlFor="node-name">
-								<input id="node-name" value={config.tunnel.name} onChange={(event) => setTunnel("name", event.target.value)} disabled={isRunning} spellCheck={false} />
-							</Field>
-              <Field label={text.channel} htmlFor="channel">
-                <input id="channel" value={config.tunnel.remote} onChange={(event) => setTunnel("remote", event.target.value)} disabled={isRunning} spellCheck={false} />
-              </Field>
-              {config.role === "edge" ? (
-                <Field label={text.localListen} htmlFor="listen">
-                  <input id="listen" value={config.listen} onChange={(event) => setField("listen", event.target.value)} disabled={isRunning} spellCheck={false} />
-                </Field>
-              ) : (
-                <>
-                  <Field label={text.targetService} htmlFor="local">
-                    <input id="local" value={config.tunnel.local} onChange={(event) => setTunnel("local", event.target.value)} disabled={isRunning} spellCheck={false} />
-                  </Field>
-                  <Field label={text.targetPool} htmlFor="target-pool">
-                    <input id="target-pool" type="number" min={0} max={65535} step={1} value={config.tunnel.pool ?? 0} onChange={(event) => setTunnel("pool", Number(event.target.value))} disabled={isRunning} />
-                  </Field>
-                </>
-              )}
-							<SecretField
-								id="token"
-								label={text.relayToken}
-								locale={locale}
-								value={config.token}
-								visible={showToken}
-								disabled={isRunning}
-								onChange={(value) => setField("token", value)}
-								onToggle={() => setShowToken((value) => !value)}
-								onGenerate={() => void generate("token")}
-							/>
-              <SecretField
-                id="secret"
-                label={text.endToEndSecret}
-                locale={locale}
-                value={config.secret}
-                visible={showSecret}
-                disabled={isRunning}
-                onChange={(value) => setField("secret", value)}
-                onToggle={() => setShowSecret((value) => !value)}
-                onGenerate={() => void generate("secret")}
-                wide
-              />
-						<div className="field full-width rule-manager">
-							<div className="rule-manager-heading">
-								<div><span className="field-label">{text.forwardingRules}</span><p>{text.forwardingRulesDescription}</p></div>
-								<button type="button" className="button secondary-button compact-command" onClick={addRule} disabled={isRunning}><Plus size={17} />{text.addRule}</button>
-							</div>
-							{rules.length === 0 ? (
-								<div className="rule-empty">{text.singleRuleCompatibility}</div>
-							) : (
-								<div className="rule-list">
-									{rules.map((rule, index) => (
-										<div className="rule-row" key={`${index}-${rule.remote}`}>
-											<div className="rule-index">{index + 1}</div>
-											<label><span>{text.nodeName}</span><input value={rule.name} onChange={(event) => updateRule(index, "name", event.target.value)} disabled={isRunning} /></label>
-											<label><span>{text.channel}</span><input value={rule.remote} onChange={(event) => updateRule(index, "remote", event.target.value)} disabled={isRunning} /></label>
-											{config.role === "edge" ? <label><span>{text.localListen}</span><input value={rule.listen} onChange={(event) => updateRule(index, "listen", event.target.value)} disabled={isRunning} /></label> : <label><span>{text.targetService}</span><input value={rule.local} onChange={(event) => updateRule(index, "local", event.target.value)} disabled={isRunning} /></label>}
-											{config.role === "target" && <label className="rule-pool"><span>{text.targetPool}</span><input type="number" min={0} max={65535} value={rule.pool ?? 0} onChange={(event) => updateRule(index, "pool", Number(event.target.value))} disabled={isRunning} /></label>}
-											<button type="button" className="icon-button rule-delete" onClick={() => removeRule(index)} disabled={isRunning} aria-label={text.deleteRule} title={text.deleteRule}><Trash size={17} /></button>
-										</div>
-									))}
-								</div>
-							)}
-						</div>
-            </div>
-          )}
-
-          <div className="form-actions">
-            <div className="action-feedback" aria-live="polite">
-              {errors.length > 0 && (
-                <div className="message-strip error-strip" role="alert">
-                  <Warning size={18} weight="fill" />
-                  <div>{errors.map((error) => <div key={error}>{localizeValidationError(error, locale)}</div>)}</div>
-                </div>
-              )}
-              {notice && (
-                <div className="message-strip success-strip" role="status">
-                  <Check size={18} weight="bold" />
-                  <span>{text.configurationSaved}</span>
-                </div>
-              )}
-            </div>
-            <div className="action-buttons">
-              <button type="button" className="button secondary-button" onClick={() => void save()} disabled={busy || isRunning}>
-                <FloppyDisk size={18} />
-                {text.save}
-              </button>
-              <button
-                type="button"
-                className={`button ${isRunning ? "stop-button" : "primary-button"}`}
-                onClick={() => void toggleRuntime()}
-                disabled={busy || status.state === "stopping"}
-              >
-                {busy ? <CircleNotch size={18} className="spin" /> : isRunning ? <Stop size={18} weight="fill" /> : <Play size={18} weight="fill" />}
-                {isRunning ? text.stop : text.start}
-              </button>
-            </div>
-          </div>
-        </div>
+      <section className={`workspace ${mode === "relay" ? "relay-workspace" : ""}`}>
+        {mode === "relay" && (
+          <RelayConsole
+            locale={locale}
+            config={config}
+            status={status}
+            busy={busy}
+            errors={errors}
+            notice={notice}
+            isRunning={isRunning}
+            loading={consoleLoading}
+            onField={setField}
+            onSave={() => void save()}
+            onToggleRuntime={() => void toggleRuntime()}
+            onError={(message) => setErrors([message])}
+          />
+        )}
+        {mode === "target" && (
+          <TargetConsole
+            locale={locale}
+            config={config}
+            status={status}
+            busy={busy}
+            errors={errors}
+            notice={notice}
+            isRunning={isRunning}
+            loading={consoleLoading}
+            onField={setField}
+            onSave={() => void save()}
+            onToggleRuntime={() => void toggleRuntime()}
+            onServicesSaved={(services) => setConfig((current) => ({ ...current, services }))}
+            onError={(message) => setErrors([message])}
+          />
+        )}
+        {mode === "edge" && (
+          <EdgeConsole
+            locale={locale}
+            config={config}
+            status={status}
+            busy={busy}
+            errors={errors}
+            notice={notice}
+            isRunning={isRunning}
+            loading={consoleLoading}
+            onField={setField}
+            onSave={() => void save()}
+            onToggleRuntime={() => void toggleRuntime()}
+            onMappingsSaved={(mappings) => setConfig((current) => ({ ...current, mappings }))}
+            onError={(message) => setErrors([message])}
+          />
+        )}
 
         <aside className="runtime-panel">
           <div className="panel-heading runtime-heading">
@@ -579,37 +528,23 @@ function App() {
 
           <dl className="runtime-facts">
             <RuntimeFact label={text.state} value={text.states[status.state]} />
-            <RuntimeFact label={text.mode} value={text.modes[status.mode || config.mode]} />
-            <RuntimeFact label={text.role} value={text.roles[isRelay ? "hub" : status.role || config.role]} />
-            <RuntimeFact
-              label={text.listen}
-              value={runtimeListen}
-              mono={runtimeListen !== text.notListening && runtimeListen !== text.notExposed}
-            />
+            <RuntimeFact label={text.mode} value={text.modes[mode]} />
+            {mode === "relay" && (
+              <RuntimeFact
+                label={text.listen}
+                value={status.state === "running" ? status.listen || config.listen || "" : text.notListening}
+                mono={status.state === "running"}
+              />
+            )}
           </dl>
 
           <div className="security-line">
             <ShieldCheck size={20} />
-            <span>{isRelay ? text.ciphertextRelay : text.aesGcmSession}</span>
+            <span>{mode === "relay" ? text.ciphertextRelay : text.aesGcmSession}</span>
           </div>
 
-          {isRelay && (
-            <section className="peer-section" aria-labelledby="connected-clients-heading">
-              <div className="peer-heading">
-                <h3 id="connected-clients-heading">{text.connectedClients}</h3>
-                <span>{relayPeers.length}</span>
-              </div>
-              <div className="peer-list" aria-live="polite">
-                {relayPeers.length === 0 ? (
-                  <div className="empty-peers">
-                    <PlugsConnected size={22} />
-                    <span>{text.noConnectedClients}</span>
-                  </div>
-                ) : (
-					relayPeers.map((peer) => <RelayPeerRow key={peer.id} peer={peer} locale={locale} now={now} />)
-                )}
-              </div>
-            </section>
+          {mode === "relay" && (
+            <RelayPeersSection locale={locale} status={status} now={now} onError={(message) => setErrors([message])} />
           )}
 
           <div className="activity-heading">
@@ -634,6 +569,1029 @@ function App() {
         </aside>
       </section>
     </main>
+  );
+}
+
+interface ConsoleProps {
+  locale: Locale;
+  config: Config;
+  status: RuntimeStatus;
+  busy: boolean;
+  errors: string[];
+  notice: boolean;
+  isRunning: boolean;
+  loading: boolean;
+  onField: <K extends keyof Config>(field: K, value: Config[K]) => void;
+  onSave: () => void;
+  onToggleRuntime: () => void;
+  onError: (message: string) => void;
+}
+
+function RelayConsole(props: ConsoleProps) {
+  const { locale, config, status, busy, errors, notice, isRunning, loading, onField, onSave, onToggleRuntime, onError } = props;
+  const text = copy[locale];
+  const [relayDomain, setRelayDomain] = useState("molex.example.com");
+  const [adminDomain, setAdminDomain] = useState("admin.molex.example.com");
+
+  const downloadCaddyfile = () => {
+    const relayHost = relayDomain.trim();
+    const adminHost = adminDomain.trim();
+    if (!relayHost || !adminHost) return;
+    const content = `${relayHost} {\n    @molex_session {\n        path /ws/session\n        header Connection *Upgrade*\n        header Upgrade websocket\n    }\n    handle @molex_session {\n        reverse_proxy ${config.listen || "127.0.0.1:8080"}\n    }\n    handle {\n        respond "Hello, world." 200\n    }\n}\n\n${adminHost} {\n    reverse_proxy 127.0.0.1:9090\n}\n`;
+    const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "Caddyfile";
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="config-panel">
+      <div className="panel-heading">
+        <div>
+          <h1>{text.relayConfiguration}</h1>
+          <p>{text.relayConfigurationDescription}</p>
+        </div>
+      </div>
+
+      {loading ? (
+        <SkeletonRows count={4} label={text.loadingData} />
+      ) : (
+        <>
+          <div className="form-grid relay-fields">
+            <Field label={text.listenAddress} htmlFor="listen">
+              <input id="listen" value={config.listen ?? ""} onChange={(event) => onField("listen", event.target.value)} disabled={isRunning} spellCheck={false} />
+            </Field>
+            <div className="field full-width caddy-helper">
+              <div className="rule-manager-heading"><div><span className="field-label">{text.caddySetup}</span><p>{text.caddySetupDescription}</p></div><a className="text-link" href="https://caddyserver.com/docs/install" target="_blank" rel="noreferrer">{text.caddyOfficialGuide}</a></div>
+              <div className="caddy-fields">
+                <label><span>{text.relayDomain}</span><input value={relayDomain} onChange={(event) => setRelayDomain(event.target.value)} spellCheck={false} /></label>
+                <label><span>{text.adminDomain}</span><input value={adminDomain} onChange={(event) => setAdminDomain(event.target.value)} spellCheck={false} /></label>
+                <button type="button" className="button secondary-button" onClick={downloadCaddyfile} disabled={!relayDomain.trim() || !adminDomain.trim()}><DownloadSimple size={17} />{text.downloadCaddyfile}</button>
+              </div>
+            </div>
+          </div>
+
+          <TokensManager locale={locale} status={status} onError={onError} />
+        </>
+      )}
+
+      <FormActions
+        locale={locale}
+        errors={errors}
+        notice={notice}
+        busy={busy}
+        isRunning={isRunning}
+        stopping={status.state === "stopping"}
+        onSave={onSave}
+        onToggleRuntime={onToggleRuntime}
+      />
+    </div>
+  );
+}
+
+function TokensManager({ locale, status, onError }: { locale: Locale; status: RuntimeStatus; onError: (message: string) => void }) {
+  const text = copy[locale];
+  const [tokens, setTokens] = useState<TokenEntry[] | null>(null);
+  const [note, setNote] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [pendingID, setPendingID] = useState("");
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  const [copiedID, setCopiedID] = useState("");
+  const [graceDays, setGraceDays] = useState(3);
+
+  useEffect(() => {
+    let mounted = true;
+    void api.getTokens()
+      .then((loaded) => mounted && setTokens(loaded))
+      .catch((error: unknown) => {
+        if (!mounted) return;
+        setTokens([]);
+        onError(messageFrom(error));
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [onError]);
+
+  const groups = useMemo(() => {
+    const byToken = new Map<string, { targetOnline: boolean; edges: number }>();
+    for (const peer of status.peers ?? []) {
+      if (!peer.tokenId) continue;
+      const entry = byToken.get(peer.tokenId) ?? { targetOnline: false, edges: 0 };
+      if (peer.role === "target") entry.targetOnline = true;
+      if (peer.role === "edge") entry.edges++;
+      byToken.set(peer.tokenId, entry);
+    }
+    return byToken;
+  }, [status.peers]);
+
+  const create = async () => {
+    setCreating(true);
+    try {
+      const entry = await api.createToken(note.trim());
+      setTokens((current) => [...(current ?? []), entry]);
+      setRevealed((current) => ({ ...current, [entry.id]: true }));
+      setNote("");
+    } catch (error) {
+      onError(messageFrom(error));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const toggleDisabled = async (token: TokenEntry) => {
+    setPendingID(token.id);
+    try {
+      const updated = await api.updateToken(token.id, { disabled: !token.disabled });
+      setTokens((current) => (current ?? []).map((entry) => (entry.id === token.id ? updated : entry)));
+    } catch (error) {
+      onError(messageFrom(error));
+    } finally {
+      setPendingID("");
+    }
+  };
+
+  const rotate = async (token: TokenEntry) => {
+    setPendingID(token.id);
+    try {
+      const updated = await api.rotateToken(token.id, graceDays);
+      setTokens((current) => (current ?? []).map((entry) => (entry.id === token.id ? updated : entry)));
+      setRevealed((current) => ({ ...current, [token.id]: true }));
+    } catch (error) {
+      onError(messageFrom(error));
+    } finally {
+      setPendingID("");
+    }
+  };
+
+  const remove = async (token: TokenEntry) => {
+    setPendingID(token.id);
+    try {
+      await api.deleteToken(token.id);
+      setTokens((current) => (current ?? []).filter((entry) => entry.id !== token.id));
+    } catch (error) {
+      onError(messageFrom(error));
+    } finally {
+      setPendingID("");
+    }
+  };
+
+  const copyValue = async (token: TokenEntry) => {
+    try {
+      await navigator.clipboard.writeText(token.token);
+      setCopiedID(token.id);
+      window.setTimeout(() => setCopiedID((current) => (current === token.id ? "" : current)), 1500);
+    } catch (error) {
+      onError(messageFrom(error));
+    }
+  };
+
+  return (
+    <div className="field full-width token-manager">
+      <div className="rule-manager-heading">
+        <div>
+          <span className="field-label">{text.accessTokens}</span>
+          <p>{text.accessTokensDescription}</p>
+        </div>
+      </div>
+      <div className="token-create">
+        <input
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          placeholder={text.tokenNotePlaceholder}
+          aria-label={text.tokenNotePlaceholder}
+          spellCheck={false}
+        />
+        <button type="button" className="button secondary-button compact-command" onClick={() => void create()} disabled={creating}>
+          {creating ? <CircleNotch size={17} className="spin" /> : <Plus size={17} />}
+          {text.createToken}
+        </button>
+        <label className="token-grace">
+          <span>{text.graceDays}</span>
+          <input
+            type="number"
+            min={1}
+            max={30}
+            value={graceDays}
+            onChange={(event) => setGraceDays(Math.min(30, Math.max(1, Number(event.target.value) || 3)))}
+            aria-label={text.graceDays}
+          />
+        </label>
+      </div>
+
+      {tokens === null ? (
+        <SkeletonRows count={2} label={text.loadingData} />
+      ) : tokens.length === 0 ? (
+        <div className="rule-empty">{text.noTokensYet}</div>
+      ) : (
+        <div className="token-list">
+          {tokens.map((token) => {
+            const group = groups.get(token.id);
+            const visible = Boolean(revealed[token.id]);
+            const pending = pendingID === token.id;
+            return (
+              <div className={`token-row ${token.disabled ? "token-disabled" : ""}`} key={token.id}>
+                <div className="token-row-top">
+                  <div className="token-identity">
+                    <strong>{token.note || token.id}</strong>
+                    <span className="mono">{token.id}</span>
+                  </div>
+                  <div className="token-chips">
+                    {token.disabled ? (
+                      <span className="token-chip chip-disabled">{text.tokenDisabledTag}</span>
+                    ) : (
+                      <>
+                        <span className={`token-chip ${group?.targetOnline ? "chip-online" : "chip-offline"}`}>
+                          {group?.targetOnline ? text.tokenTargetOnline : text.tokenTargetOffline}
+                        </span>
+                        <span className="token-chip chip-neutral">{group?.edges ?? 0} {text.tokenEdgeCount}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="token-value">
+                  <code className="mono" title={visible ? token.token : undefined}>
+                    {visible ? token.token : "•".repeat(24)}
+                  </code>
+                  <button type="button" className="icon-button" onClick={() => setRevealed((current) => ({ ...current, [token.id]: !visible }))} aria-label={visible ? text.hideToken : text.revealToken} title={visible ? text.hideToken : text.revealToken}>
+                    {visible ? <EyeSlash size={16} /> : <Eye size={16} />}
+                  </button>
+                  <button type="button" className="icon-button" onClick={() => void copyValue(token)} aria-label={text.copyToken} title={text.copyToken}>
+                    {copiedID === token.id ? <Check size={16} /> : <Copy size={16} />}
+                  </button>
+                </div>
+                <div className="token-row-actions">
+                  {token.createdAt && <span className="token-created">{text.createdAt} {formatTime(token.createdAt, locale)}</span>}
+                  {token.previousExpiresAt && (
+                    <span className="token-created">{text.tokenGraceUntil} {formatTime(token.previousExpiresAt, locale)}</span>
+                  )}
+                  <button type="button" className="button secondary-button compact-command" onClick={() => void rotate(token)} disabled={pending || token.disabled}>
+                    {pending ? <CircleNotch size={16} className="spin" /> : <ArrowClockwise size={16} />}
+                    {text.rotateToken}
+                  </button>
+                  <button type="button" className="button secondary-button compact-command" onClick={() => void toggleDisabled(token)} disabled={pending}>
+                    {pending ? <CircleNotch size={16} className="spin" /> : token.disabled ? <Plugs size={16} /> : <Stop size={16} />}
+                    {token.disabled ? text.enableToken : text.disableToken}
+                  </button>
+                  <button type="button" className="icon-button rule-delete" onClick={() => void remove(token)} disabled={pending} aria-label={text.deleteToken} title={text.deleteToken}>
+                    <Trash size={16} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RelayPeersSection({ locale, status, now, onError }: { locale: Locale; status: RuntimeStatus; now: number; onError: (message: string) => void }) {
+  const text = copy[locale];
+  const peers = status.peers ?? [];
+  const [pendingID, setPendingID] = useState("");
+
+  const kick = async (peer: RelayPeer) => {
+    setPendingID(peer.id);
+    try {
+      await api.disconnectPeer(peer.id);
+    } catch (error) {
+      onError(messageFrom(error));
+    } finally {
+      setPendingID("");
+    }
+  };
+
+  return (
+    <section className="peer-section" aria-labelledby="connected-clients-heading">
+      <div className="peer-heading">
+        <h3 id="connected-clients-heading">{text.connectedClients}</h3>
+        <span>{peers.length}</span>
+      </div>
+      <div className="peer-list" aria-live="polite">
+        {peers.length === 0 ? (
+          <div className="empty-peers">
+            <PlugsConnected size={22} />
+            <span>{text.noConnectedClients}</span>
+          </div>
+        ) : (
+          peers.map((peer) => (
+            <RelayPeerRow
+              key={peer.id}
+              peer={peer}
+              locale={locale}
+              now={now}
+              pending={pendingID === peer.id}
+              onKick={() => void kick(peer)}
+            />
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+function TargetConsole(props: ConsoleProps & { onServicesSaved: (services: ServiceEntry[]) => void }) {
+  const { locale, config, status, busy, errors, notice, isRunning, loading, onField, onSave, onToggleRuntime, onServicesSaved, onError } = props;
+  const text = copy[locale];
+
+  return (
+    <div className="config-panel">
+      <div className="panel-heading">
+        <div>
+          <h1>{text.connection}</h1>
+          <p>{text.connectionDescriptionTarget}</p>
+        </div>
+      </div>
+
+      {loading ? (
+        <SkeletonRows count={5} label={text.loadingData} />
+      ) : (
+        <>
+          <div className="form-grid">
+            <Field label={text.wssEndpoint} htmlFor="remote" wide>
+              <input id="remote" value={config.remote ?? ""} onChange={(event) => onField("remote", event.target.value)} disabled={isRunning} spellCheck={false} />
+            </Field>
+            <ClientGroupsEditor
+              locale={locale}
+              config={config}
+              disabled={isRunning}
+              onChange={(next) => {
+                onField("token", next.token);
+                onField("tokens", next.tokens);
+              }}
+            />
+            <Field label={text.nodeName} htmlFor="node-name">
+              <input id="node-name" value={config.name ?? ""} onChange={(event) => onField("name", event.target.value)} disabled={isRunning} spellCheck={false} />
+            </Field>
+          </div>
+
+          <ServicesEditor
+            locale={locale}
+            services={config.services ?? []}
+            groupNames={clientGroupList(config).map((group) => group.id).filter(Boolean)}
+            statuses={status.services ?? []}
+            onSaved={onServicesSaved}
+            onError={onError}
+          />
+        </>
+      )}
+
+      <FormActions
+        locale={locale}
+        errors={errors}
+        notice={notice}
+        busy={busy}
+        isRunning={isRunning}
+        stopping={status.state === "stopping"}
+        onSave={onSave}
+        onToggleRuntime={onToggleRuntime}
+      />
+    </div>
+  );
+}
+
+function ServicesEditor({ locale, services, groupNames, statuses, onSaved, onError }: {
+  locale: Locale;
+  services: ServiceEntry[];
+  groupNames: string[];
+  statuses: { id: string; name: string; address: string; streams?: number; lastError?: string }[];
+  onSaved: (services: ServiceEntry[]) => void;
+  onError: (message: string) => void;
+}) {
+  const text = copy[locale];
+  const [draft, setDraft] = useState<ServiceEntry[]>(services);
+  const [saving, setSaving] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+  const loadedRef = useRef(false);
+
+  useEffect(() => {
+    if (loadedRef.current) return;
+    loadedRef.current = true;
+    setDraft(services);
+  }, [services]);
+
+  const statusByID = useMemo(() => new Map(statuses.map((entry) => [entry.id, entry])), [statuses]);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(services);
+
+  const update = (index: number, field: "name" | "address", value: string) => {
+    setDraft((current) => current.map((entry, entryIndex) => (entryIndex === index ? { ...entry, [field]: value } : entry)));
+  };
+  const toggleGroup = (index: number, group: string) => {
+    setDraft((current) => current.map((entry, entryIndex) => {
+      if (entryIndex !== index) return entry;
+      const selected = new Set(entry.groups ?? groupNames);
+      if (selected.has(group)) selected.delete(group);
+      else selected.add(group);
+      const next = groupNames.filter((name) => selected.has(name));
+      return { ...entry, groups: next.length === 0 || next.length === groupNames.length ? undefined : next };
+    }));
+  };
+  const add = () => setDraft((current) => [...current, { id: "", name: "", address: "" }]);
+  const remove = (index: number) => setDraft((current) => current.filter((_, entryIndex) => entryIndex !== index));
+
+  const saveServices = async () => {
+    setSaving(true);
+    try {
+      const saved = await api.saveServices(draft);
+      setDraft(saved);
+      onSaved(saved);
+      setSavedFlash(true);
+      window.setTimeout(() => setSavedFlash(false), 1500);
+    } catch (error) {
+      onError(messageFrom(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="field full-width rule-manager service-manager">
+      <div className="rule-manager-heading">
+        <div>
+          <span className="field-label">{text.publishedServices}</span>
+          <p>{text.publishedServicesDescription}</p>
+        </div>
+        <button type="button" className="button secondary-button compact-command" onClick={add}>
+          <Plus size={17} />
+          {text.addService}
+        </button>
+      </div>
+      {draft.length === 0 ? (
+        <div className="rule-empty">{text.noServicesYet}</div>
+      ) : (
+        <div className="rule-list">
+          {draft.map((service, index) => {
+            const live = service.id ? statusByID.get(service.id) : undefined;
+            return (
+              <div className="rule-row service-row" key={service.id || `new-${index}`}>
+                <div className="rule-index">{index + 1}</div>
+                <label><span>{text.serviceName}</span><input value={service.name} onChange={(event) => update(index, "name", event.target.value)} spellCheck={false} /></label>
+                <label><span>{text.serviceAddress}</span><input value={service.address} onChange={(event) => update(index, "address", event.target.value)} spellCheck={false} placeholder="10.188.200.16:30927" /></label>
+                {groupNames.length > 1 && (
+                  <fieldset className="service-groups">
+                    <legend>{text.visibleGroups}</legend>
+                    {groupNames.map((group) => {
+                      const checked = !service.groups?.length || service.groups.includes(group);
+                      return (
+                        <label key={group}>
+                          <input type="checkbox" checked={checked} onChange={() => toggleGroup(index, group)} />
+                          <span>{group}</span>
+                        </label>
+                      );
+                    })}
+                  </fieldset>
+                )}
+                <div className="service-live">
+                  {live && <span className="token-chip chip-neutral">{live.streams ?? 0} {text.serviceStreams}</span>}
+                  {live?.lastError && <span className="service-error" title={live.lastError}>{text.serviceLastError}: {live.lastError}</span>}
+                </div>
+                <button type="button" className="icon-button rule-delete" onClick={() => remove(index)} aria-label={text.deleteService} title={text.deleteService}>
+                  <Trash size={17} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div className="manager-actions">
+        {savedFlash && <span className="manager-saved"><Check size={15} /> {text.configurationSaved}</span>}
+        <button type="button" className="button secondary-button" onClick={() => void saveServices()} disabled={saving || !dirty}>
+          {saving ? <CircleNotch size={17} className="spin" /> : <FloppyDisk size={17} />}
+          {text.saveServices}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EdgeConsole(props: ConsoleProps & { onMappingsSaved: (mappings: MappingEntry[]) => void }) {
+  const { locale, config, status, busy, errors, notice, isRunning, loading, onField, onSave, onToggleRuntime, onMappingsSaved, onError } = props;
+  const text = copy[locale];
+
+  return (
+    <div className="config-panel">
+      <div className="panel-heading">
+        <div>
+          <h1>{text.connection}</h1>
+          <p>{text.connectionDescriptionEdge}</p>
+        </div>
+      </div>
+
+      {loading ? (
+        <SkeletonRows count={5} label={text.loadingData} />
+      ) : (
+        <>
+          <div className="form-grid">
+            <Field label={text.wssEndpoint} htmlFor="remote" wide>
+              <input id="remote" value={config.remote ?? ""} onChange={(event) => onField("remote", event.target.value)} disabled={isRunning} spellCheck={false} />
+            </Field>
+            <ClientGroupsEditor
+              locale={locale}
+              config={config}
+              disabled={isRunning}
+              onChange={(next) => {
+                onField("token", next.token);
+                onField("tokens", next.tokens);
+              }}
+            />
+            <Field label={text.nodeName} htmlFor="node-name">
+              <input id="node-name" value={config.name ?? ""} onChange={(event) => onField("name", event.target.value)} disabled={isRunning} spellCheck={false} />
+            </Field>
+          </div>
+
+          <CatalogMapper
+            locale={locale}
+            config={config}
+            status={status}
+            isRunning={isRunning}
+            onSaved={onMappingsSaved}
+            onError={onError}
+          />
+        </>
+      )}
+
+      <FormActions
+        locale={locale}
+        errors={errors}
+        notice={notice}
+        busy={busy}
+        isRunning={isRunning}
+        stopping={status.state === "stopping"}
+        onSave={onSave}
+        onToggleRuntime={onToggleRuntime}
+      />
+    </div>
+  );
+}
+
+interface MappingDraft {
+  checked: boolean;
+  port: string;
+  lan: boolean;
+}
+
+function CatalogMapper({ locale, config, status, isRunning, onSaved, onError }: {
+  locale: Locale;
+  config: Config;
+  status: RuntimeStatus;
+  isRunning: boolean;
+  onSaved: (mappings: MappingEntry[]) => void;
+  onError: (message: string) => void;
+}) {
+  const text = copy[locale];
+  const [drafts, setDrafts] = useState<Map<string, MappingDraft>>(() => {
+    const initial = new Map<string, MappingDraft>();
+    for (const mapping of config.mappings ?? []) {
+      initial.set(mappingKey(mapping.group, mapping.service), { checked: true, port: String(mapping.port), lan: Boolean(mapping.lan) });
+    }
+    return initial;
+  });
+  const [applying, setApplying] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  const catalog = status.catalog;
+  const online = Boolean(catalog?.online);
+  const grouped = (catalog?.groups ?? []).length > 0;
+  const statusByService = useMemo(
+    () => new Map((status.mappings ?? []).map((entry) => [mappingKey(entry.group, entry.service), entry])),
+    [status.mappings],
+  );
+
+  // Rows = published services plus any configured mapping whose service is
+  // currently unpublished (kept so it can be unchecked or resumed later).
+  const rows = useMemo(() => {
+    const seen = new Set<string>();
+    const list: { id: string; group?: string; name?: string; address?: string; published: boolean; groupOnline?: boolean }[] = [];
+    const published = grouped
+      ? (catalog?.groups ?? []).flatMap((entry) => entry.services.map((service) => ({ ...service, group: entry.group, groupOnline: entry.online })))
+      : (catalog?.services ?? []).map((service) => ({ ...service, groupOnline: online }));
+    for (const service of published) {
+      const key = mappingKey(service.group, service.id);
+      seen.add(key);
+      list.push({ id: service.id, group: service.group, name: service.name, address: service.address, published: true, groupOnline: service.groupOnline });
+    }
+    for (const [key, draft] of drafts) {
+      if (seen.has(key) || !draft.checked) continue;
+      const runtime = statusByService.get(key);
+      const [group, serviceID] = key.split("\0");
+      list.push({ id: serviceID, group: group || undefined, name: runtime?.serviceName, address: runtime?.address, published: false, groupOnline: false });
+    }
+    return list;
+  }, [catalog?.groups, catalog?.services, drafts, grouped, online, statusByService]);
+
+  const savedMappings = config.mappings ?? [];
+  const draftMappings = useMemo(() => {
+    const list: MappingEntry[] = [];
+    for (const [key, draft] of drafts) {
+      if (!draft.checked) continue;
+      const [group, serviceID] = key.split("\0");
+      list.push({ service: serviceID, group: group || undefined, port: Number(draft.port) || 0, lan: draft.lan || undefined });
+    }
+    return list.sort((left, right) => mappingKey(left.group, left.service).localeCompare(mappingKey(right.group, right.service)));
+  }, [drafts]);
+  const dirty = JSON.stringify(draftMappings) !== JSON.stringify(
+    [...savedMappings].sort((left, right) => mappingKey(left.group, left.service).localeCompare(mappingKey(right.group, right.service)))
+      .map((mapping) => ({ service: mapping.service, group: mapping.group || undefined, port: mapping.port, lan: mapping.lan || undefined })),
+  );
+
+  const toggleService = async (service: { id: string; group?: string }) => {
+    const key = mappingKey(service.group, service.id);
+    const current = drafts.get(key);
+    if (current?.checked) {
+      setDrafts((previous) => {
+        const next = new Map(previous);
+        next.set(key, { ...current, checked: false });
+        return next;
+      });
+      return;
+    }
+    let port = current?.port ?? "";
+    if (!port) {
+      try {
+        port = String(await api.suggestPort(false));
+      } catch {
+        port = String(20000 + Math.floor(Math.random() * 20000));
+      }
+    }
+    setDrafts((previous) => {
+      const next = new Map(previous);
+      next.set(key, { checked: true, port, lan: current?.lan ?? false });
+      return next;
+    });
+  };
+
+  const updateDraft = (service: { id: string; group?: string }, changes: Partial<MappingDraft>) => {
+    const key = mappingKey(service.group, service.id);
+    setDrafts((previous) => {
+      const next = new Map(previous);
+      const current = next.get(key) ?? { checked: false, port: "", lan: false };
+      next.set(key, { ...current, ...changes });
+      return next;
+    });
+  };
+
+  const apply = async () => {
+    for (const mapping of draftMappings) {
+      if (!Number.isInteger(mapping.port) || mapping.port < 1 || mapping.port > 65535) {
+        onError(`mappings[${draftMappings.indexOf(mapping)}].port must be between 1 and 65535`);
+        return;
+      }
+    }
+    setApplying(true);
+    try {
+      const saved = await api.saveMappings(draftMappings);
+      onSaved(saved);
+      setSavedFlash(true);
+      window.setTimeout(() => setSavedFlash(false), 1500);
+    } catch (error) {
+      onError(messageFrom(error));
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  return (
+    <div className="field full-width rule-manager catalog-manager">
+      <div className="rule-manager-heading">
+        <div>
+          <span className="field-label">{text.serviceCatalog}</span>
+          <p>{text.serviceCatalogDescription}</p>
+        </div>
+      </div>
+
+      {!isRunning && rows.length === 0 ? (
+        <div className="rule-empty">{text.catalogStartHint}</div>
+      ) : isRunning && !online && rows.length === 0 ? (
+        <div className="catalog-loading" role="status">
+          <CircleNotch size={18} className="spin" />
+          <span>{text.catalogWaiting}</span>
+        </div>
+      ) : isRunning && !online && rows.length > 0 ? (
+        <div className="catalog-offline" role="status">
+          <WifiSlash size={16} />
+          <span>{text.catalogOffline}</span>
+        </div>
+      ) : null}
+
+      {isRunning && online && rows.length === 0 && (
+        <div className="rule-empty">{text.noCatalogServices}</div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="catalog-list">
+          {rows.map((service) => {
+            const key = mappingKey(service.group, service.id);
+            const draft = drafts.get(key) ?? { checked: false, port: "", lan: false };
+            const runtime = statusByService.get(key);
+            const label = service.group ? `${service.group} / ${service.name ?? service.id}` : (service.name ?? service.id);
+            return (
+              <div className={`catalog-row ${draft.checked ? "catalog-checked" : ""}`} key={key}>
+                <label className="catalog-main">
+                  <input
+                    type="checkbox"
+                    checked={draft.checked}
+                    onChange={() => void toggleService(service)}
+                    aria-label={`${text.serviceCatalog}: ${label}`}
+                  />
+                  <span className="catalog-identity">
+                    <strong>{service.name ?? service.id}</strong>
+                    {service.group && <span className="token-chip chip-neutral">{text.catalogGroup} {service.group}</span>}
+                    <span className="mono catalog-address" title={service.address ?? ""}>{service.address ?? "—"}</span>
+                  </span>
+                </label>
+                {!service.published && <span className="token-chip chip-offline">{text.mappingUnpublished}</span>}
+                {service.published && service.groupOnline === false && <span className="token-chip chip-offline">{text.catalogGroupOffline}</span>}
+                {draft.checked && (
+                  <div className="catalog-mapping">
+                    <label className="catalog-port">
+                      <span>{text.localPort}</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={draft.port}
+                        onChange={(event) => updateDraft(service, { port: event.target.value })}
+                        aria-label={`${text.localPort} ${label}`}
+                      />
+                    </label>
+                    <label className="catalog-lan" title={text.lanVisibleHint}>
+                      <input
+                        type="checkbox"
+                        checked={draft.lan}
+                        onChange={(event) => updateDraft(service, { lan: event.target.checked })}
+                      />
+                      <span>{text.lanVisible}</span>
+                    </label>
+                    {runtime && (
+                      <span className={`mapping-state mapping-${runtime.state}`} title={runtime.message ? localizeRuntimeMessage(runtime.message, locale) : undefined}>
+                        {text.mappingStates[runtime.state]}
+                        {runtime.state === "listening" && runtime.listen ? <code className="mono">{runtime.listen}</code> : null}
+                      </span>
+                    )}
+                    {runtime && (runtime.connections ?? 0) > 0 && (
+                      <span className="mapping-stats">{runtime.connections} {text.connectionsCount} · {formatBytes(runtime.bytes ?? 0)} {text.transferred}</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="manager-actions">
+        {savedFlash && <span className="manager-saved"><Check size={15} /> {text.configurationSaved}</span>}
+        <button type="button" className="button secondary-button" onClick={() => void apply()} disabled={applying || !dirty}>
+          {applying ? <CircleNotch size={17} className="spin" /> : <FloppyDisk size={17} />}
+          {text.applyMappings}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RolePicker({ locale, themePreference, busy, errors, onLocaleChange, onThemeChange, onChoose }: {
+  locale: Locale;
+  themePreference: ThemePreference;
+  busy: boolean;
+  errors: string[];
+  onLocaleChange: () => void;
+  onThemeChange: () => void;
+  onChoose: (mode: Mode) => Promise<void>;
+}) {
+  const text = copy[locale];
+  const command = "molex config init --mode relay";
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <main className="auth-shell">
+      <header className="auth-topbar">
+        <div className="brand-lockup">
+          <img src="./molex-mark.svg" alt="" className="brand-mark" />
+          <div><div className="brand-name">MoleX</div><div className="brand-subtitle">{text.brandSubtitle}</div></div>
+        </div>
+        <div className="topbar-actions">
+          <LanguageButton locale={locale} onClick={onLocaleChange} />
+          <ThemeButton locale={locale} preference={themePreference} onClick={onThemeChange} />
+        </div>
+      </header>
+      <section className="auth-stage">
+        <div className="login-panel role-picker">
+          <div className="login-heading">
+            <h1>{text.chooseRoleTitle}</h1>
+            <p>{text.chooseRoleDescription}</p>
+          </div>
+          <div className="role-options">
+            <button type="button" className="role-option" onClick={() => void onChoose("edge")} disabled={busy}>
+              <Plugs size={26} />
+              <strong>{text.roleEdgeTitle}</strong>
+              <span>{text.roleEdgeDescription}</span>
+            </button>
+            <button type="button" className="role-option" onClick={() => void onChoose("target")} disabled={busy}>
+              <HardDrives size={26} />
+              <strong>{text.roleTargetTitle}</strong>
+              <span>{text.roleTargetDescription}</span>
+            </button>
+          </div>
+          <div className="role-relay-hint">
+            <strong>{text.roleRelayTitle}</strong>
+            <p>{text.roleRelayDescription}</p>
+            <div className="role-command">
+              <code className="mono">{command}</code>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => {
+                  void navigator.clipboard.writeText(command).then(() => {
+                    setCopied(true);
+                    window.setTimeout(() => setCopied(false), 1500);
+                  }).catch(() => undefined);
+                }}
+                aria-label={text.copyCommand}
+                title={text.copyCommand}
+              >
+                {copied ? <Check size={16} /> : <Copy size={16} />}
+              </button>
+            </div>
+          </div>
+          {errors.length > 0 && (
+            <div className="message-strip error-strip" role="alert">
+              <Warning size={18} weight="fill" />
+              <div>{errors.map((error) => <div key={error}>{localizeValidationError(error, locale)}</div>)}</div>
+            </div>
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function FormActions({ locale, errors, notice, busy, isRunning, stopping, onSave, onToggleRuntime }: {
+  locale: Locale;
+  errors: string[];
+  notice: boolean;
+  busy: boolean;
+  isRunning: boolean;
+  stopping: boolean;
+  onSave: () => void;
+  onToggleRuntime: () => void;
+}) {
+  const text = copy[locale];
+  return (
+    <div className="form-actions">
+      <div className="action-feedback" aria-live="polite">
+        {errors.length > 0 && (
+          <div className="message-strip error-strip" role="alert">
+            <Warning size={18} weight="fill" />
+            <div>{errors.map((error) => <div key={error}>{localizeValidationError(error, locale)}</div>)}</div>
+          </div>
+        )}
+        {notice && (
+          <div className="message-strip success-strip" role="status">
+            <Check size={18} weight="bold" />
+            <span>{text.configurationSaved}</span>
+          </div>
+        )}
+      </div>
+      <div className="action-buttons">
+        <button type="button" className="button secondary-button" onClick={onSave} disabled={busy || isRunning}>
+          <FloppyDisk size={18} />
+          {text.save}
+        </button>
+        <button
+          type="button"
+          className={`button ${isRunning ? "stop-button" : "primary-button"}`}
+          onClick={onToggleRuntime}
+          disabled={busy || stopping}
+        >
+          {busy ? <CircleNotch size={18} className="spin" /> : isRunning ? <Stop size={18} weight="fill" /> : <Play size={18} weight="fill" />}
+          {isRunning ? text.stop : text.start}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ClientGroupsEditor({ locale, config, disabled, onChange }: {
+  locale: Locale;
+  config: Config;
+  disabled: boolean;
+  onChange: (next: Pick<Config, "token" | "tokens">) => void;
+}) {
+  const text = copy[locale];
+  const groups = clientGroupList(config);
+  const multi = groups.length > 1;
+
+  const update = (index: number, changes: Partial<TokenEntry>) => {
+    onChange(groupsToConfig(groups.map((group, groupIndex) => (groupIndex === index ? { ...group, ...changes } : group))));
+  };
+  const add = () => {
+    const next = groups.map((group, index) => ({
+      ...group,
+      id: group.id || (index === 0 ? "default" : group.id),
+    }));
+    next.push({ id: "", token: "" });
+    onChange(groupsToConfig(next));
+  };
+  const remove = (index: number) => {
+    onChange(groupsToConfig(groups.filter((_, groupIndex) => groupIndex !== index)));
+  };
+
+  return (
+    <div className="field full-width client-groups">
+      <div className="rule-manager-heading">
+        <div>
+          <span className="field-label">{multi ? text.tokenGroups : text.accessToken}</span>
+          <p>{text.tokenGroupsDescription}</p>
+        </div>
+        <button type="button" className="button secondary-button compact-command" onClick={add} disabled={disabled}>
+          <Plus size={17} />
+          {text.addGroup}
+        </button>
+      </div>
+      <div className="client-group-list">
+        {groups.map((group, index) => (
+          <div className="client-group-row" key={`${group.id}-${index}`}>
+            {multi && (
+              <label>
+                <span>{text.groupName}</span>
+                <input
+                  value={group.id}
+                  onChange={(event) => update(index, { id: event.target.value })}
+                  disabled={disabled}
+                  placeholder={text.groupNamePlaceholder}
+                  spellCheck={false}
+                />
+              </label>
+            )}
+            <label className={multi ? undefined : "full-width"}>
+              <span>{text.accessToken}</span>
+              <TokenField
+                id={index === 0 ? "access-token" : `access-token-${index}`}
+                locale={locale}
+                value={group.token}
+                disabled={disabled}
+                onChange={(value) => update(index, { token: value })}
+              />
+            </label>
+            {multi && (
+              <button type="button" className="icon-button rule-delete" onClick={() => remove(index)} disabled={disabled} aria-label={text.deleteGroup} title={text.deleteGroup}>
+                <Trash size={16} />
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TokenField({ id, locale, value, disabled, onChange }: {
+  id: string;
+  locale: Locale;
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const text = copy[locale];
+  const [visible, setVisible] = useState(false);
+  return (
+    <span className="input-with-actions">
+      <input
+        id={id}
+        type={visible ? "text" : "password"}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+        autoComplete="off"
+        spellCheck={false}
+      />
+      <button
+        type="button"
+        onClick={() => setVisible((current) => !current)}
+        disabled={disabled}
+        aria-label={secretActionLabel(locale, visible ? "hide" : "show", text.accessToken)}
+        title={secretActionLabel(locale, visible ? "hide" : "show", text.accessToken)}
+      >
+        {visible ? <EyeSlash size={17} /> : <Eye size={17} />}
+      </button>
+    </span>
+  );
+}
+
+function SkeletonRows({ count, label }: { count: number; label: string }) {
+  return (
+    <div className="skeleton-block" role="status" aria-label={label}>
+      {Array.from({ length: count }, (_, index) => (
+        <div className="skeleton-row" key={index}>
+          <span className="skeleton-line skeleton-short" />
+          <span className="skeleton-line" />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -688,86 +1646,92 @@ function SetupScreen({ locale, themePreference, busy, errors, onLocaleChange, on
   );
 }
 
-function RelayPeerRow({ peer, locale, now }: { peer: RelayPeer; locale: Locale; now: number }) {
-	const text = copy[locale];
-	const clientName = peer.name || text.unnamedClient;
-	const counterpart = peer.peerName || (peer.peerId ? `#${peer.peerId}` : text.waitingForPeer);
-	const connectedAt = timestampMillis(peer.connectedAt);
-	const lastActivityAt = timestampMillis(peer.lastActivityAt);
-	const received = peer.bytesReceived ?? 0;
-	const sent = peer.bytesSent ?? 0;
+function RelayPeerRow({ peer, locale, now, pending, onKick }: { peer: RelayPeer; locale: Locale; now: number; pending: boolean; onKick: () => void }) {
+  const text = copy[locale];
+  const clientName = peer.name || text.unnamedClient;
+  const counterpart = peer.peerName || (peer.peerId ? `#${peer.peerId}` : text.waitingForPeer);
+  const connectedAt = timestampMillis(peer.connectedAt);
+  const lastActivityAt = timestampMillis(peer.lastActivityAt);
+  const received = peer.bytesReceived ?? 0;
+  const sent = peer.bytesSent ?? 0;
 
-	return (
-		<article className="peer-row">
-			<header className="peer-summary">
-				<span className={`peer-indicator state-${peer.status}`} aria-hidden="true" />
-				<div className="peer-identity">
-					<div className="peer-name-line">
-						<strong title={clientName}>{clientName}</strong>
-						<span>#{peer.id}</span>
-					</div>
-					<span className="peer-ip mono" title={peer.ip || text.unknownAddress}>{peer.ip || text.unknownAddress}</span>
-				</div>
-				<div className="peer-meta">
-					<span className="peer-role">{text.roles[peer.role]}</span>
-					<span className={`peer-state state-${peer.status}`}>{text.peerStates[peer.status]}</span>
-				</div>
-			</header>
+  return (
+    <article className="peer-row">
+      <header className="peer-summary">
+        <span className={`peer-indicator state-${peer.status}`} aria-hidden="true" />
+        <div className="peer-identity">
+          <div className="peer-name-line">
+            <strong title={clientName}>{clientName}</strong>
+            <span>#{peer.id}</span>
+          </div>
+          <span className="peer-ip mono" title={peer.ip || text.unknownAddress}>{peer.ip || text.unknownAddress}</span>
+        </div>
+        <div className="peer-meta">
+          <span className="peer-role">{text.roles[peer.role]}</span>
+          <span className={`peer-state state-${peer.status}`}>{text.peerStates[peer.status]}</span>
+        </div>
+      </header>
 
-			<div className="peer-forwarding">
-				<div className="peer-forward-node">
-					<span>{text.forwardEndpoint}</span>
-					<code title={peer.endpoint || text.unknownAddress}>{peer.endpoint || text.unknownAddress}</code>
-				</div>
-				<div className="peer-forward-link" aria-label={`${text.routeId} ${peer.routeId || "-"}`}>
-					<span />
-					<ArrowRight size={14} aria-hidden="true" />
-					<small className="mono">{peer.routeId || "------------"}</small>
-				</div>
-				<div className="peer-forward-node peer-forward-peer">
-					<span>{text.pairedWith}</span>
-					<strong title={counterpart}>{counterpart}</strong>
-				</div>
-			</div>
+      <div className="peer-forwarding">
+        <div className="peer-forward-node">
+          <span>{text.tokenColumn}</span>
+          <code title={peer.tokenId || "-"}>{peer.tokenId || "-"}</code>
+        </div>
+        <div className="peer-forward-link" aria-label={`${text.routeId} ${peer.routeId || "-"}`}>
+          <span />
+          <ArrowRight size={14} aria-hidden="true" />
+          <small className="mono">{peer.routeId || "------------"}</small>
+        </div>
+        <div className="peer-forward-node peer-forward-peer">
+          <span>{text.pairedWith}</span>
+          <strong title={counterpart}>{counterpart}</strong>
+        </div>
+      </div>
 
-			<dl className="peer-details">
-				<div className="peer-detail-wide">
-					<dt>{text.relayEndpoint}</dt>
-					<dd className="mono" title={peer.relayEndpoint || text.unknownAddress}>{peer.relayEndpoint || text.unknownAddress}</dd>
-				</div>
-				<div>
-					<dt>{text.platform}</dt>
-					<dd className="mono">{peer.platform || text.unknownAddress}</dd>
-				</div>
-				<div>
-					<dt>{text.connectionSource}</dt>
-					<dd>{peer.proxied ? text.trustedProxy : text.directSocket}</dd>
-				</div>
-				<div>
-					<dt>{text.connectedFor}</dt>
-					<dd title={peer.connectedAt}>
-						{Number.isFinite(connectedAt) ? formatDuration(now - connectedAt, locale) : "--"}
-						<span className="peer-detail-time">{formatTime(peer.connectedAt, locale)}</span>
-					</dd>
-				</div>
-				<div>
-					<dt>{text.lastActivity}</dt>
-					<dd>
-						{Number.isFinite(lastActivityAt)
-							? `${formatDuration(now - lastActivityAt, locale)}${locale === "zh-CN" ? "" : " "}${text.ago}`
-							: text.noTrafficYet}
-					</dd>
-				</div>
-				<div className="peer-detail-wide peer-traffic">
-					<dt>{text.traffic}</dt>
-					<dd>
-						<span><b>{text.received}</b> {formatBytes(received)} · {peer.framesReceived ?? 0} {text.frames}</span>
-						<span><b>{text.sent}</b> {formatBytes(sent)} · {peer.framesSent ?? 0} {text.frames}</span>
-					</dd>
-				</div>
-			</dl>
-		</article>
-	);
+      <dl className="peer-details">
+        <div className="peer-detail-wide">
+          <dt>{text.forwardEndpoint}</dt>
+          <dd className="mono" title={peer.endpoint || text.unknownAddress}>{peer.endpoint || text.unknownAddress}</dd>
+        </div>
+        <div>
+          <dt>{text.platform}</dt>
+          <dd className="mono">{peer.platform || text.unknownAddress}</dd>
+        </div>
+        <div>
+          <dt>{text.connectionSource}</dt>
+          <dd>{peer.proxied ? text.trustedProxy : text.directSocket}</dd>
+        </div>
+        <div>
+          <dt>{text.connectedFor}</dt>
+          <dd title={peer.connectedAt}>
+            {Number.isFinite(connectedAt) ? formatDuration(now - connectedAt, locale) : "--"}
+            <span className="peer-detail-time">{formatTime(peer.connectedAt, locale)}</span>
+          </dd>
+        </div>
+        <div>
+          <dt>{text.lastActivity}</dt>
+          <dd>
+            {Number.isFinite(lastActivityAt)
+              ? `${formatDuration(now - lastActivityAt, locale)}${locale === "zh-CN" ? "" : " "}${text.ago}`
+              : text.noTrafficYet}
+          </dd>
+        </div>
+        <div className="peer-detail-wide peer-traffic">
+          <dt>{text.traffic}</dt>
+          <dd>
+            <span><b>{text.received}</b> {formatBytes(received)} · {peer.framesReceived ?? 0} {text.frames}</span>
+            <span><b>{text.sent}</b> {formatBytes(sent)} · {peer.framesSent ?? 0} {text.frames}</span>
+          </dd>
+        </div>
+      </dl>
+      <div className="peer-actions">
+        <button type="button" className="button secondary-button compact-command" onClick={onKick} disabled={pending}>
+          {pending ? <CircleNotch size={15} className="spin" /> : <Plugs size={15} />}
+          {text.disconnectPeer}
+        </button>
+      </div>
+    </article>
+  );
 }
 
 function LoginScreen({ locale, themePreference, busy, errors, onLocaleChange, onThemeChange, onLogin }: {
@@ -895,50 +1859,12 @@ function ThemeButton({ locale, preference, onClick }: { locale: Locale; preferen
   );
 }
 
-function SegmentButton({ active, disabled, onClick, children }: { active: boolean; disabled: boolean; onClick: () => void; children: string }) {
-  return <button type="button" className={active ? "active" : ""} aria-pressed={active} disabled={disabled} onClick={onClick}>{children}</button>;
-}
-
 function Field({ label, htmlFor, wide, children }: { label: string; htmlFor: string; wide?: boolean; children: React.ReactNode }) {
   return (
     <label className={`field ${wide ? "full-width" : ""}`} htmlFor={htmlFor}>
       <span className="field-label">{label}</span>
       {children}
     </label>
-  );
-}
-
-function SecretField({ id, label, locale, value, visible, disabled, onChange, onToggle, onGenerate, wide }: {
-  id: string;
-  label: string;
-  locale: Locale;
-  value: string;
-  visible: boolean;
-  disabled: boolean;
-  onChange: (value: string) => void;
-  onToggle: () => void;
-  onGenerate: () => void;
-  wide?: boolean;
-}) {
-  return (
-    <div className={`field ${wide ? "full-width" : ""}`}>
-      <label className="field-label" htmlFor={id}>{label}</label>
-      <span className="input-with-actions">
-        <input id={id} type={visible ? "text" : "password"} value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled} autoComplete="off" spellCheck={false} />
-        <button
-          type="button"
-          onClick={onToggle}
-          disabled={disabled}
-          aria-label={secretActionLabel(locale, visible ? "hide" : "show", label)}
-          title={secretActionLabel(locale, visible ? "hide" : "show", label)}
-        >
-          {visible ? <EyeSlash size={17} /> : <Eye size={17} />}
-        </button>
-        <button type="button" onClick={onGenerate} disabled={disabled} aria-label={secretActionLabel(locale, "generate", label)} title={secretActionLabel(locale, "generate", label)}>
-          <Key size={17} />
-        </button>
-      </span>
-    </div>
   );
 }
 
@@ -965,37 +1891,40 @@ function RuntimeFact({ label, value, mono }: { label: string; value: string; mon
 }
 
 export function applyRuntimeEvent(current: RuntimeStatus, event: RuntimeEvent): RuntimeStatus {
-	const next: RuntimeStatus = { ...current };
-	if (event.state) {
-		next.state = event.state;
-		if (["idle", "connecting", "stopping", "error"].includes(event.state)) {
-			next.listen = undefined;
-		}
-	}
-	if (event.listen) next.listen = event.listen;
-	if (event.message) next.message = event.message;
-	if (!event.peerChange) return next;
+  const next: RuntimeStatus = { ...current };
+  if (event.state) {
+    next.state = event.state;
+    if (["idle", "connecting", "stopping", "error"].includes(event.state)) {
+      next.listen = undefined;
+    }
+  }
+  if (event.listen) next.listen = event.listen;
+  if (event.message) next.message = event.message;
+  if (event.catalog) next.catalog = event.catalog;
+  if (event.mappings) next.mappings = event.mappings;
+  if (event.services) next.services = event.services;
+  if (!event.peerChange) return next;
 
-	const peers = new Map((current.peers ?? []).map((peer) => [peer.id, peer]));
-	for (const peer of event.peerChange.peers) {
-		switch (event.peerChange.action) {
-			case "remove":
-				peers.delete(peer.id);
-				break;
-			case "update":
-				if (peers.has(peer.id)) peers.set(peer.id, peer);
-				break;
-			case "upsert":
-				peers.set(peer.id, peer);
-				break;
-		}
-	}
-	next.peers = [...peers.values()].sort((left, right) => {
-		const timeOrder = new Date(left.connectedAt).getTime() - new Date(right.connectedAt).getTime();
-		if (timeOrder !== 0) return timeOrder;
-		return left.id.localeCompare(right.id);
-	});
-	return next;
+  const peers = new Map((current.peers ?? []).map((peer) => [peer.id, peer]));
+  for (const peer of event.peerChange.peers) {
+    switch (event.peerChange.action) {
+      case "remove":
+        peers.delete(peer.id);
+        break;
+      case "update":
+        if (peers.has(peer.id)) peers.set(peer.id, peer);
+        break;
+      case "upsert":
+        peers.set(peer.id, peer);
+        break;
+    }
+  }
+  next.peers = [...peers.values()].sort((left, right) => {
+    const timeOrder = new Date(left.connectedAt).getTime() - new Date(right.connectedAt).getTime();
+    if (timeOrder !== 0) return timeOrder;
+    return left.id.localeCompare(right.id);
+  });
+  return next;
 }
 
 function messageFrom(error: unknown): string {
@@ -1015,41 +1944,41 @@ function formatTime(value: string, locale: Locale): string {
 }
 
 function timestampMillis(value?: string): number {
-	const timestamp = value ? new Date(value).getTime() : Number.NaN;
-	return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Number.NaN;
+  const timestamp = value ? new Date(value).getTime() : Number.NaN;
+  return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Number.NaN;
 }
 
 function formatDuration(milliseconds: number, locale: Locale): string {
-	let seconds = Math.max(0, Math.floor(milliseconds / 1000));
-	const days = Math.floor(seconds / 86400);
-	seconds %= 86400;
-	const hours = Math.floor(seconds / 3600);
-	seconds %= 3600;
-	const minutes = Math.floor(seconds / 60);
-	seconds %= 60;
+  let seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const days = Math.floor(seconds / 86400);
+  seconds %= 86400;
+  const hours = Math.floor(seconds / 3600);
+  seconds %= 3600;
+  const minutes = Math.floor(seconds / 60);
+  seconds %= 60;
 
-	if (locale === "zh-CN") {
-		if (days > 0) return `${days}天 ${hours}时`;
-		if (hours > 0) return `${hours}时 ${minutes}分`;
-		if (minutes > 0) return `${minutes}分 ${seconds}秒`;
-		return `${seconds}秒`;
-	}
-	if (days > 0) return `${days}d ${hours}h`;
-	if (hours > 0) return `${hours}h ${minutes}m`;
-	if (minutes > 0) return `${minutes}m ${seconds}s`;
-	return `${seconds}s`;
+  if (locale === "zh-CN") {
+    if (days > 0) return `${days}天 ${hours}时`;
+    if (hours > 0) return `${hours}时 ${minutes}分`;
+    if (minutes > 0) return `${minutes}分 ${seconds}秒`;
+    return `${seconds}秒`;
+  }
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 function formatBytes(value: number): string {
-	if (!Number.isFinite(value) || value <= 0) return "0 B";
-	const units = ["B", "KB", "MB", "GB", "TB"];
-	let amount = value;
-	let unit = 0;
-	while (amount >= 1024 && unit < units.length - 1) {
-		amount /= 1024;
-		unit++;
-	}
-	return `${unit === 0 ? Math.floor(amount) : amount.toFixed(amount >= 100 ? 0 : 1)} ${units[unit]}`;
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = value;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit++;
+  }
+  return `${unit === 0 ? Math.floor(amount) : amount.toFixed(amount >= 100 ? 0 : 1)} ${units[unit]}`;
 }
 
 export default App;

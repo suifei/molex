@@ -8,6 +8,9 @@ import (
 	"net"
 	"strings"
 	"syscall"
+
+	"github.com/gorilla/websocket"
+	"github.com/suifei/molex/internal/relay"
 )
 
 var errSessionClosed = errors.New("encrypted session closed by relay or peer")
@@ -39,9 +42,39 @@ func (e *localListenError) Unwrap() error {
 	return e.err
 }
 
+// permanentRejection highlights errors that keep failing until an operator
+// acts, so the console shows one clear error besides the retry countdown.
+func permanentRejection(err error) string {
+	var httpErr *relayHTTPError
+	if errors.As(err, &httpErr) {
+		switch httpErr.statusCode {
+		case 401:
+			return "The relay rejected this token (HTTP 401). Copy a valid token from the relay console and paste the exact value here."
+		case 403:
+			return "The relay reports this token is disabled (HTTP 403). Ask the relay administrator to enable the token or issue a new one."
+		}
+	}
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		switch closeErr.Code {
+		case relay.CloseDuplicateTarget:
+			return "Another Target is already connected with this token. Each token accepts exactly one Target; stop the other Target or use a different token."
+		case relay.CloseTokenDisabled:
+			return "The relay administrator disabled this token. Ask for a new or re-enabled token before reconnecting."
+		case relay.CloseKicked:
+			return "The relay administrator disconnected this client. It reconnects automatically; contact the administrator if access stays blocked."
+		}
+	}
+	return ""
+}
+
 func guidanceForClientError(err error) string {
 	if err == nil {
 		return "The encrypted route ended unexpectedly. Check the relay and peer; MoleX will keep retrying."
+	}
+
+	if rejection := permanentRejection(err); rejection != "" {
+		return rejection
 	}
 
 	var listenErr *localListenError
@@ -52,8 +85,6 @@ func guidanceForClientError(err error) string {
 	var httpErr *relayHTTPError
 	if errors.As(err, &httpErr) {
 		switch httpErr.statusCode {
-		case 401, 403:
-			return fmt.Sprintf("Relay authentication was rejected (HTTP %d). Make the relay token identical on Relay, Edge, and Target.", httpErr.statusCode)
 		case 404:
 			return "The relay WebSocket route was not found (HTTP 404). Check that the URL ends with /ws/session and Caddy forwards that path."
 		case 429:
@@ -67,16 +98,19 @@ func guidanceForClientError(err error) string {
 
 	detail := strings.ToLower(err.Error())
 	if strings.Contains(detail, "pair timeout") {
-		return "No matching peer joined before the pairing timeout. Start the other client and verify that Edge and Target use the same channel, secret, token, and complementary roles."
+		return "No Target answered before the pairing timeout. Start the Target for this token and check that both sides run MoleX v2 with the same token."
 	}
 	if strings.Contains(detail, "session unavailable") {
-		return "The relay could not accept this session. Verify the relay route and admission token, then retry; clients with the same role may wait on the same channel."
+		return "The relay could not accept this session. Verify the relay route and token, then retry."
+	}
+	if strings.Contains(detail, "route does not match") {
+		return "The relay rejected the session route for this token. Make sure Edge, Target, and Relay all run MoleX v2 and use the exact same token."
 	}
 	if strings.Contains(detail, "peer authentication failed") ||
 		strings.Contains(detail, "session key confirmation failed") ||
 		strings.Contains(detail, "peer joined a different channel") ||
 		strings.Contains(detail, "peer role does not complement") {
-		return "The encrypted handshake failed. Verify that Edge and Target use the same channel and secret with complementary roles."
+		return "The encrypted handshake failed. Verify that Edge and Target use the exact same token and run compatible MoleX v2 versions."
 	}
 
 	var dnsErr *net.DNSError
@@ -98,11 +132,11 @@ func guidanceForClientError(err error) string {
 		return "The relay or peer closed the encrypted route. Retry the local connection after the route is ready."
 	}
 
-	return "Check relay reachability and verify that Edge and Target use the same channel, secret, token, and complementary roles. Details: " + compactError(err)
+	return "Check relay reachability and verify that Edge and Target use the same token. Details: " + compactError(err)
 }
 
-func targetServiceUnavailableMessage(address string, err error) string {
-	return fmt.Sprintf("Target service at %s is unavailable. Start the service or correct tunnel.local, then retry the Edge connection. Details: %s", address, compactError(err))
+func targetServiceUnavailableMessage(name, address string, err error) string {
+	return fmt.Sprintf("Service %q at %s is unavailable. Start the backend service or correct its address in the service list, then retry from the Edge. Details: %s", name, address, compactError(err))
 }
 
 func compactError(err error) string {

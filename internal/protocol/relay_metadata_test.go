@@ -47,6 +47,33 @@ func TestRelayMetadataRoundTripIsPaddedAndAuthenticated(t *testing.T) {
 	}
 }
 
+func TestRelayMetadataRefreshUsesFreshNonces(t *testing.T) {
+	hello, err := NewHello([]byte("metadata-secret-material-123456"), "channel", RoleTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := SealRelayMetadata(hello, "token", RelayMetadata{Endpoint: "1 services"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := SealRelayMetadata(hello, "token", RelayMetadata{Endpoint: "3 services"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("frame counts = %d / %d", len(first), len(second))
+	}
+	if bytes.Equal(first[0], second[0]) {
+		t.Fatal("two refreshes of the same field reused a ciphertext")
+	}
+	if got := OpenRelayMetadata(hello, "token", first); got.Endpoint != "1 services" {
+		t.Fatalf("first refresh = %#v", got)
+	}
+	if got := OpenRelayMetadata(hello, "token", second); got.Endpoint != "3 services" {
+		t.Fatalf("second refresh = %#v", got)
+	}
+}
+
 func TestRelayMetadataTruncatesAtUTF8Boundary(t *testing.T) {
 	hello, err := NewHello([]byte("metadata-secret-material-123456"), "channel", RoleTarget)
 	if err != nil {

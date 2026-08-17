@@ -24,8 +24,8 @@ import (
 
 const testPassword = "correct-horse-battery-staple"
 
-func TestAuthenticationAndCSRF(t *testing.T) {
-	server := newTestServer(t)
+func TestRelayConsoleAuthenticationAndCSRF(t *testing.T) {
+	server := newRelayTestServer(t)
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	client := newTestClient(t)
@@ -44,22 +44,26 @@ func TestAuthenticationAndCSRF(t *testing.T) {
 	csrf := login(t, client, httpServer.URL)
 	response = doRequest(t, client, http.MethodGet, httpServer.URL+"/api/config", "", nil)
 	assertStatus(t, response, http.StatusOK)
-	response.Body.Close()
+	var served config.Config
+	decodeResponse(t, response, &served)
+	if served.Mode != config.ModeRelay {
+		t.Fatalf("relay console served mode %q", served.Mode)
+	}
 
-	cfg := config.Default()
-	response = doRequest(t, client, http.MethodPost, httpServer.URL+"/api/config/validate", httpServer.URL, cfg)
+	invalid := config.Config{Mode: config.ModeRelay, Listen: "bad-address"}
+	response = doRequest(t, client, http.MethodPost, httpServer.URL+"/api/config/validate", httpServer.URL, invalid)
 	assertStatus(t, response, http.StatusForbidden)
 	response.Body.Close()
 
-	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/config/validate", httpServer.URL, csrf, cfg)
+	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/config/validate", httpServer.URL, csrf, invalid)
 	assertStatus(t, response, http.StatusOK)
 	var validation validationResult
 	decodeResponse(t, response, &validation)
 	if validation.Valid || len(validation.Errors) == 0 {
-		t.Fatal("expected the default client configuration to require a secret")
+		t.Fatal("expected the invalid relay configuration to be rejected")
 	}
 
-	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/secret", "https://attacker.example", csrf, map[string]string{})
+	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/tokens", "https://attacker.example", csrf, tokenCreateRequest{Note: "x"})
 	assertStatus(t, response, http.StatusForbidden)
 	response.Body.Close()
 
@@ -71,14 +75,101 @@ func TestAuthenticationAndCSRF(t *testing.T) {
 	response.Body.Close()
 }
 
-func TestRuntimeLifecycle(t *testing.T) {
-	server := newTestServer(t)
+func TestRelayTokenCRUDPersistsAndReturnsFullValues(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "molex.json")
+	server := newRelayTestServerAt(t, configPath)
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	client := newTestClient(t)
 	csrf := login(t, client, httpServer.URL)
 
-	cfg := config.Config{Mode: config.ModeRelay, Listen: "127.0.0.1:0", Tunnel: config.TunnelConfig{}}
+	response := doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/tokens", httpServer.URL, csrf, tokenCreateRequest{Note: "office"})
+	assertStatus(t, response, http.StatusCreated)
+	var created config.TokenEntry
+	decodeResponse(t, response, &created)
+	if created.ID == "" || !strings.HasPrefix(created.Token, "mx2_") || created.Note != "office" || created.CreatedAt.IsZero() {
+		t.Fatalf("created token = %#v", created)
+	}
+
+	response = doRequest(t, client, http.MethodGet, httpServer.URL+"/api/tokens", "", nil)
+	assertStatus(t, response, http.StatusOK)
+	var listed []config.TokenEntry
+	decodeResponse(t, response, &listed)
+	if len(listed) != 1 || listed[0].Token != created.Token {
+		t.Fatalf("token list = %#v", listed)
+	}
+
+	disabled := true
+	response = doAuthorizedRequest(t, client, http.MethodPut, httpServer.URL+"/api/tokens/"+created.ID, httpServer.URL, csrf, tokenUpdateRequest{Disabled: &disabled})
+	assertStatus(t, response, http.StatusOK)
+	var updated config.TokenEntry
+	decodeResponse(t, response, &updated)
+	if !updated.Disabled {
+		t.Fatalf("updated token = %#v, want disabled", updated)
+	}
+
+	saved, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Mode != config.ModeRelay || len(saved.Tokens) != 1 || !saved.Tokens[0].Disabled {
+		t.Fatalf("persisted config = %#v", saved)
+	}
+
+	response = doAuthorizedRequest(t, client, http.MethodDelete, httpServer.URL+"/api/tokens/"+created.ID, httpServer.URL, csrf, nil)
+	assertStatus(t, response, http.StatusNoContent)
+	response.Body.Close()
+	response = doAuthorizedRequest(t, client, http.MethodDelete, httpServer.URL+"/api/tokens/"+created.ID, httpServer.URL, csrf, nil)
+	assertStatus(t, response, http.StatusNotFound)
+	response.Body.Close()
+}
+
+func TestRelayTokenRotateKeepsPreviousValueThroughGrace(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "molex.json")
+	server := newRelayTestServerAt(t, configPath)
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := newTestClient(t)
+	csrf := login(t, client, httpServer.URL)
+
+	response := doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/tokens", httpServer.URL, csrf, tokenCreateRequest{Note: "office"})
+	assertStatus(t, response, http.StatusCreated)
+	var created config.TokenEntry
+	decodeResponse(t, response, &created)
+
+	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/tokens/"+created.ID+"/rotate", httpServer.URL, csrf, tokenRotateRequest{GraceDays: 2})
+	assertStatus(t, response, http.StatusOK)
+	var rotated config.TokenEntry
+	decodeResponse(t, response, &rotated)
+	if rotated.Token == "" || rotated.Token == created.Token {
+		t.Fatalf("rotated token reused the previous value: %#v", rotated)
+	}
+	if rotated.PreviousToken != created.Token {
+		t.Fatalf("previous token = %q, want %q", rotated.PreviousToken, created.Token)
+	}
+	if rotated.PreviousExpiresAt.IsZero() || rotated.PreviousExpiresAt.Before(time.Now().Add(24*time.Hour)) {
+		t.Fatalf("grace expiry = %s, want about two days", rotated.PreviousExpiresAt)
+	}
+
+	saved, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Tokens[0].Token != rotated.Token || saved.Tokens[0].PreviousToken != created.Token {
+		t.Fatalf("persisted rotation = %#v", saved.Tokens[0])
+	}
+}
+
+func TestRelayRuntimeLifecycleAndTokenUpdateWhileRunning(t *testing.T) {
+	server := newRelayTestServer(t)
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := newTestClient(t)
+	csrf := login(t, client, httpServer.URL)
+
+	cfg := config.Config{Mode: config.ModeRelay, Listen: "127.0.0.1:0"}
 	response := doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/runtime/start", httpServer.URL, csrf, cfg)
 	assertStatus(t, response, http.StatusAccepted)
 	response.Body.Close()
@@ -88,48 +179,287 @@ func TestRuntimeLifecycle(t *testing.T) {
 	assertStatus(t, response, http.StatusConflict)
 	response.Body.Close()
 
+	// Token management stays available while the relay is running.
+	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/tokens", httpServer.URL, csrf, tokenCreateRequest{Note: "live"})
+	assertStatus(t, response, http.StatusCreated)
+	response.Body.Close()
+
+	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/peers/disconnect", httpServer.URL, csrf, disconnectRequest{ID: "999"})
+	assertStatus(t, response, http.StatusNotFound)
+	response.Body.Close()
+
 	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/runtime/stop", httpServer.URL, csrf, map[string]string{})
 	assertStatus(t, response, http.StatusOK)
 	response.Body.Close()
 	waitForState(t, client, httpServer.URL, "idle")
 }
 
-func TestConfigCRUDPreservesMultipleSameNameRules(t *testing.T) {
-	server := newTestServer(t)
+func TestStartAndSaveKeepManagedListsAuthoritative(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "molex.json")
+	server := newRelayTestServerAt(t, configPath)
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	client := newTestClient(t)
 	csrf := login(t, client, httpServer.URL)
 
-	cfg := config.Config{
-		Mode:   config.ModePunch,
-		Role:   config.RoleEdge,
-		Secret: "0123456789abcdef0123456789abcdef",
-		Token:  "relay-token-for-webui-test",
-		Remote: "wss://relay.example/ws/session",
-		Tunnel: config.TunnelConfig{Rules: []config.TunnelRule{
-			{Name: "shared-edge", Listen: "127.0.0.1:2201", Remote: "ssh"},
-			{Name: "shared-edge", Listen: "127.0.0.1:2202", Remote: "rdp"},
-		}},
-	}
-	response := doAuthorizedRequest(t, client, http.MethodPut, httpServer.URL+"/api/config", httpServer.URL, csrf, cfg)
+	response := doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/tokens", httpServer.URL, csrf, tokenCreateRequest{Note: "keep-me"})
+	assertStatus(t, response, http.StatusCreated)
+	response.Body.Close()
+
+	// A browser that loaded its configuration before the token was created
+	// starts the runtime with an empty token list; the server must keep the
+	// on-disk tokens instead of wiping them.
+	stale := config.Config{Mode: config.ModeRelay, Listen: "127.0.0.1:0"}
+	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/runtime/start", httpServer.URL, csrf, stale)
+	assertStatus(t, response, http.StatusAccepted)
+	response.Body.Close()
+	waitForState(t, client, httpServer.URL, "running")
+	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/runtime/stop", httpServer.URL, csrf, map[string]string{})
+	assertStatus(t, response, http.StatusOK)
+	response.Body.Close()
+
+	response = doAuthorizedRequest(t, client, http.MethodPut, httpServer.URL+"/api/config", httpServer.URL, csrf, stale)
 	assertStatus(t, response, http.StatusNoContent)
 	response.Body.Close()
 
-	response = doRequest(t, client, http.MethodGet, httpServer.URL+"/api/config", "", nil)
-	assertStatus(t, response, http.StatusOK)
-	var saved config.Config
-	decodeResponse(t, response, &saved)
-	if len(saved.Tunnel.Rules) != 2 {
-		t.Fatalf("saved rule count = %d, want 2", len(saved.Tunnel.Rules))
+	saved, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if saved.Tunnel.Rules[0].Name != saved.Tunnel.Rules[1].Name {
-		t.Fatalf("same-name rules were changed: %#v", saved.Tunnel.Rules)
+	if len(saved.Tokens) != 1 || saved.Tokens[0].Note != "keep-me" {
+		t.Fatalf("tokens after stale start/save = %#v, want the created token preserved", saved.Tokens)
 	}
 }
 
+func TestRelayConsoleRejectsForeignModeConfig(t *testing.T) {
+	server := newRelayTestServer(t)
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := newTestClient(t)
+	csrf := login(t, client, httpServer.URL)
+
+	edgeConfig := config.Config{Mode: config.ModeEdge, Remote: "wss://relay.example.com", Token: "mx2_0123456789abcdef"}
+	response := doAuthorizedRequest(t, client, http.MethodPut, httpServer.URL+"/api/config", httpServer.URL, csrf, edgeConfig)
+	assertStatus(t, response, http.StatusBadRequest)
+	response.Body.Close()
+
+	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/runtime/start", httpServer.URL, csrf, edgeConfig)
+	assertStatus(t, response, http.StatusBadRequest)
+	response.Body.Close()
+}
+
+func TestEdgeConsoleWorksWithoutLogin(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "molex.json")
+	if err := config.Save(configPath, config.Config{
+		Mode:   config.ModeEdge,
+		Remote: "wss://relay.example.com/ws/session",
+		Token:  "mx2_0123456789abcdef",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(Options{
+		Listen:     "127.0.0.1:0",
+		ConfigPath: configPath,
+		Mode:       config.ModeEdge,
+		ModeLocked: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := newTestClient(t)
+
+	response := doRequest(t, client, http.MethodGet, httpServer.URL+"/api/session", "", nil)
+	assertStatus(t, response, http.StatusOK)
+	var session sessionResponse
+	decodeResponse(t, response, &session)
+	if !session.Authenticated || session.AuthRequired || session.Mode != config.ModeEdge || session.CSRFToken == "" {
+		t.Fatalf("edge session = %#v", session)
+	}
+
+	// Reads work without any cookie or password.
+	response = doRequest(t, client, http.MethodGet, httpServer.URL+"/api/config", "", nil)
+	assertStatus(t, response, http.StatusOK)
+	response.Body.Close()
+
+	// Mutations still require the per-boot CSRF token.
+	mappings := []config.MappingEntry{{Service: "svc-1", Port: 28080}}
+	response = doRequest(t, client, http.MethodPut, httpServer.URL+"/api/mappings", httpServer.URL, mappings)
+	assertStatus(t, response, http.StatusForbidden)
+	response.Body.Close()
+
+	response = doAuthorizedRequest(t, client, http.MethodPut, httpServer.URL+"/api/mappings", httpServer.URL, session.CSRFToken, mappings)
+	assertStatus(t, response, http.StatusOK)
+	var savedMappings []config.MappingEntry
+	decodeResponse(t, response, &savedMappings)
+	if len(savedMappings) != 1 || savedMappings[0].Service != "svc-1" {
+		t.Fatalf("saved mappings = %#v", savedMappings)
+	}
+	saved, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Mode != config.ModeEdge || len(saved.Mappings) != 1 {
+		t.Fatalf("persisted edge config = %#v", saved)
+	}
+
+	// A free-port suggestion returns a usable loopback port.
+	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/ports/free", httpServer.URL, session.CSRFToken, freePortRequest{})
+	assertStatus(t, response, http.StatusOK)
+	var portResult map[string]int
+	decodeResponse(t, response, &portResult)
+	if portResult["port"] < 1 || portResult["port"] > 65535 {
+		t.Fatalf("suggested port = %#v", portResult)
+	}
+
+	// Relay-only and target-only endpoints stay hidden.
+	response = doRequest(t, client, http.MethodGet, httpServer.URL+"/api/tokens", "", nil)
+	assertStatus(t, response, http.StatusNotFound)
+	response.Body.Close()
+	response = doRequest(t, client, http.MethodGet, httpServer.URL+"/api/services", "", nil)
+	assertStatus(t, response, http.StatusNotFound)
+	response.Body.Close()
+	response = doRequest(t, client, http.MethodPost, httpServer.URL+"/api/login", httpServer.URL, map[string]string{"password": "x"})
+	assertStatus(t, response, http.StatusNotFound)
+	response.Body.Close()
+}
+
+func TestTargetConsoleServicesAssignIDsAndPersist(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "molex.json")
+	if err := config.Save(configPath, config.Config{
+		Mode:   config.ModeTarget,
+		Remote: "wss://relay.example.com/ws/session",
+		Token:  "mx2_0123456789abcdef",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(Options{
+		Listen:     "127.0.0.1:0",
+		ConfigPath: configPath,
+		Mode:       config.ModeTarget,
+		ModeLocked: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := newTestClient(t)
+	csrf := localSession(t, client, httpServer.URL)
+
+	services := []config.ServiceEntry{
+		{Name: "web", Address: "10.188.200.16:30927"},
+		{ID: "svc-fixed", Name: "ssh", Address: "127.0.0.1:22"},
+	}
+	response := doAuthorizedRequest(t, client, http.MethodPut, httpServer.URL+"/api/services", httpServer.URL, csrf, services)
+	assertStatus(t, response, http.StatusOK)
+	var savedServices []config.ServiceEntry
+	decodeResponse(t, response, &savedServices)
+	if len(savedServices) != 2 || savedServices[0].ID == "" || savedServices[1].ID != "svc-fixed" {
+		t.Fatalf("saved services = %#v", savedServices)
+	}
+
+	saved, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Services) != 2 || saved.Services[0].Name != "web" {
+		t.Fatalf("persisted services = %#v", saved.Services)
+	}
+
+	// Duplicate names must be rejected with an actionable validation error.
+	duplicate := []config.ServiceEntry{
+		{Name: "web", Address: "10.0.0.5:80"},
+		{Name: "web", Address: "10.0.0.6:80"},
+	}
+	response = doAuthorizedRequest(t, client, http.MethodPut, httpServer.URL+"/api/services", httpServer.URL, csrf, duplicate)
+	assertStatus(t, response, http.StatusBadRequest)
+	response.Body.Close()
+}
+
+func TestLocalConsoleRejectsRemoteAndRebindingRequests(t *testing.T) {
+	server, err := New(Options{
+		Listen:     "127.0.0.1:0",
+		ConfigPath: filepath.Join(t.TempDir(), "molex.json"),
+		Mode:       config.ModeEdge,
+		ModeLocked: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// DNS rebinding: loopback socket but a foreign Host header.
+	request := httptest.NewRequest(http.MethodGet, "http://evil.example/api/config", nil)
+	request.RemoteAddr = "127.0.0.1:52345"
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("foreign host status = %d, want 403", recorder.Code)
+	}
+
+	// Direct remote connection.
+	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9090/api/config", nil)
+	request.RemoteAddr = "198.51.100.7:40000"
+	recorder = httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("remote peer status = %d, want 403", recorder.Code)
+	}
+
+	// Cross-origin browser context.
+	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9090/api/config", nil)
+	request.RemoteAddr = "127.0.0.1:52345"
+	request.Header.Set("Origin", "https://evil.example")
+	recorder = httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin status = %d, want 403", recorder.Code)
+	}
+}
+
+func TestBootstrapLocksConsoleRoleOnce(t *testing.T) {
+	server, err := New(Options{
+		Listen:     "127.0.0.1:0",
+		ConfigPath: filepath.Join(t.TempDir(), "molex.json"),
+		Mode:       config.ModeEdge,
+		ModeLocked: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := newTestClient(t)
+
+	csrf := localSession(t, client, httpServer.URL)
+	response := doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/bootstrap", httpServer.URL, csrf, bootstrapRequest{Mode: "relay"})
+	assertStatus(t, response, http.StatusConflict)
+	response.Body.Close()
+
+	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/bootstrap", httpServer.URL, csrf, bootstrapRequest{Mode: "target"})
+	assertStatus(t, response, http.StatusOK)
+	var session sessionResponse
+	decodeResponse(t, response, &session)
+	if session.Mode != config.ModeTarget || !session.ModeLocked {
+		t.Fatalf("bootstrap session = %#v", session)
+	}
+
+	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/bootstrap", httpServer.URL, csrf, bootstrapRequest{Mode: "edge"})
+	assertStatus(t, response, http.StatusConflict)
+	response.Body.Close()
+
+	// After bootstrap the console serves target endpoints.
+	response = doRequest(t, client, http.MethodGet, httpServer.URL+"/api/services", "", nil)
+	assertStatus(t, response, http.StatusOK)
+	response.Body.Close()
+}
+
 func TestLoginRateLimit(t *testing.T) {
-	server := newTestServer(t)
+	server := newRelayTestServer(t)
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	client := newTestClient(t)
@@ -147,7 +477,7 @@ func TestLoginRateLimit(t *testing.T) {
 }
 
 func TestStaticAssetsAndHealth(t *testing.T) {
-	server := newTestServer(t)
+	server := newRelayTestServer(t)
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	client := newTestClient(t)
@@ -177,6 +507,10 @@ func TestWebServerRejectsUnsafeOptions(t *testing.T) {
 	_, err = New(Options{Listen: "127.0.0.1:9090", Password: "short"})
 	if err == nil || !strings.Contains(err.Error(), "12 characters") {
 		t.Fatalf("expected short password rejection, got %v", err)
+	}
+	// Local consoles do not need a password at all.
+	if _, err := New(Options{Listen: "127.0.0.1:9090", Mode: config.ModeEdge, ModeLocked: true}); err != nil {
+		t.Fatalf("edge console rejected without password: %v", err)
 	}
 }
 
@@ -279,7 +613,7 @@ func TestRunStopsAutostartWhenWebListenFails(t *testing.T) {
 	defer occupied.Close()
 
 	configPath := filepath.Join(t.TempDir(), "relay.json")
-	if err := config.Save(configPath, config.Config{Mode: config.ModeRelay, Listen: "127.0.0.1:0", Tunnel: config.TunnelConfig{}}); err != nil {
+	if err := config.Save(configPath, config.Config{Mode: config.ModeRelay, Listen: "127.0.0.1:0"}); err != nil {
 		t.Fatal(err)
 	}
 	server, err := New(Options{
@@ -384,11 +718,16 @@ func TestRunAdvancesFromOccupiedDefaultPort(t *testing.T) {
 	}
 }
 
-func newTestServer(t *testing.T) *Server {
+func newRelayTestServer(t *testing.T) *Server {
+	t.Helper()
+	return newRelayTestServerAt(t, filepath.Join(t.TempDir(), "molex.json"))
+}
+
+func newRelayTestServerAt(t *testing.T, configPath string) *Server {
 	t.Helper()
 	server, err := New(Options{
 		Listen:     "127.0.0.1:0",
-		ConfigPath: filepath.Join(t.TempDir(), "molex.json"),
+		ConfigPath: configPath,
 		Password:   testPassword,
 	})
 	if err != nil {
@@ -414,6 +753,18 @@ func login(t *testing.T, client *http.Client, baseURL string) string {
 	decodeResponse(t, response, &session)
 	if !session.Authenticated || session.CSRFToken == "" {
 		t.Fatal("login did not return an authenticated session")
+	}
+	return session.CSRFToken
+}
+
+func localSession(t *testing.T, client *http.Client, baseURL string) string {
+	t.Helper()
+	response := doRequest(t, client, http.MethodGet, baseURL+"/api/session", "", nil)
+	assertStatus(t, response, http.StatusOK)
+	var session sessionResponse
+	decodeResponse(t, response, &session)
+	if !session.Authenticated || session.CSRFToken == "" {
+		t.Fatalf("local session = %#v", session)
 	}
 	return session.CSRFToken
 }

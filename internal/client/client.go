@@ -2,7 +2,9 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -22,46 +24,51 @@ import (
 	"github.com/suifei/molex/internal/telemetry"
 )
 
-func Run(ctx context.Context, cfg config.Config, reporter telemetry.Reporter) error {
-	return run(ctx, cfg, reporter, defaultRetrySettings())
+// Updates carries live configuration changes into a running client. A nil
+// channel means the corresponding list never changes at runtime.
+type Updates struct {
+	Services <-chan []config.ServiceEntry
+	Mappings <-chan []config.MappingEntry
 }
 
-func run(ctx context.Context, cfg config.Config, reporter telemetry.Reporter, retry retrySettings) error {
+func Run(ctx context.Context, cfg config.Config, reporter telemetry.Reporter) error {
+	return RunWithUpdates(ctx, cfg, reporter, Updates{})
+}
+
+func RunWithUpdates(ctx context.Context, cfg config.Config, reporter telemetry.Reporter, updates Updates) error {
+	return run(ctx, cfg, reporter, defaultRetrySettings(), updates)
+}
+
+func run(ctx context.Context, cfg config.Config, reporter telemetry.Reporter, retry retrySettings, updates Updates) error {
 	cfg = cfg.Normalized()
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	if cfg.Mode != config.ModePunch {
-		return errors.New("client requires punch mode")
+	switch cfg.Mode {
+	case config.ModeEdge:
+		return runEdgeProcess(ctx, cfg, reporter, retry, updates.Mappings)
+	case config.ModeTarget:
+		return runTargetProcess(ctx, cfg, reporter, retry, updates.Services)
+	default:
+		return errors.New("client requires target or edge mode")
 	}
-	routes := cfg.ClientRoutes()
-	if len(routes) > 1 {
-		return runRouteSet(ctx, routes, reporter, retry)
-	}
-	return runSingleRoute(ctx, routes[0], reporter, retry)
 }
 
-func runRouteSet(ctx context.Context, routes []config.Config, reporter telemetry.Reporter, retry retrySettings) error {
-	var workers sync.WaitGroup
-	workers.Add(len(routes))
-	for _, route := range routes {
-		go func(route config.Config) {
-			defer workers.Done()
-			_ = runSingleRoute(ctx, route, reporter, retry)
-		}(route)
-	}
-	workers.Wait()
-	return nil
+// sessionHandler drives one authenticated encrypted session until it ends.
+type sessionHandler func(ctx context.Context, conn net.Conn, reporter telemetry.Reporter) error
+
+// sessionSpec bundles everything one reconnecting session loop needs. The
+// metadata provider is evaluated per attempt so reconnects always report
+// current service and mapping counts.
+type sessionSpec struct {
+	cfg      config.Config
+	role     protocol.Role
+	token    string
+	metadata func() protocol.RelayMetadata
+	handler  sessionHandler
 }
 
-func runSingleRoute(ctx context.Context, cfg config.Config, reporter telemetry.Reporter, retry retrySettings) error {
-	if cfg.Role == config.RoleTarget && cfg.Tunnel.Pool != 1 {
-		return runTargetPool(ctx, cfg, reporter, retry)
-	}
-	return runSessionLoop(ctx, cfg, reporter, retry)
-}
-
-func runSessionLoop(ctx context.Context, cfg config.Config, reporter telemetry.Reporter, retry retrySettings) error {
+func runSessionLoop(ctx context.Context, spec sessionSpec, reporter telemetry.Reporter, retry retrySettings) error {
 	policy := newRetryPolicy(retry)
 	for {
 		telemetry.Emit(reporter, telemetry.Event{
@@ -71,12 +78,21 @@ func runSessionLoop(ctx context.Context, cfg config.Config, reporter telemetry.R
 			Message:     "Connecting to relay",
 			ClearListen: true,
 		})
-		connectedFor, err := runAttempt(ctx, cfg, reporter)
+		connectedFor, err := runAttempt(ctx, spec, reporter)
 		if ctx.Err() != nil {
 			return nil
 		}
 		if err == nil {
 			err = errSessionClosed
+		}
+		if permanent := permanentRejection(err); permanent != "" {
+			telemetry.Emit(reporter, telemetry.Event{
+				Type:        "client_rejected",
+				Level:       "error",
+				State:       "connecting",
+				Message:     permanent,
+				ClearListen: true,
+			})
 		}
 		delay := policy.nextDelay(connectedFor)
 		telemetry.Emit(reporter, telemetry.Event{
@@ -96,144 +112,12 @@ func runSessionLoop(ctx context.Context, cfg config.Config, reporter telemetry.R
 	}
 }
 
-func runTargetPool(ctx context.Context, cfg config.Config, reporter telemetry.Reporter, retry retrySettings) error {
-	adaptive := cfg.Tunnel.Pool == config.DefaultTargetPool
-	total := cfg.Tunnel.Pool
-	if adaptive {
-		total = config.MaxTargetPool
+func runAttempt(ctx context.Context, spec sessionSpec, reporter telemetry.Reporter) (time.Duration, error) {
+	metadata := protocol.RelayMetadata{}
+	if spec.metadata != nil {
+		metadata = spec.metadata()
 	}
-	pool := newTargetPoolReporter(total, reporter)
-	telemetry.Emit(reporter, telemetry.Event{
-		Type:        "client_connecting",
-		Level:       "info",
-		State:       "connecting",
-		Message:     targetPoolConnectingMessage(cfg.Tunnel.Pool, total),
-		ClearListen: true,
-	})
-
-	var workers sync.WaitGroup
-	var launchMu sync.Mutex
-	started := 0
-	var launch func()
-	launch = func() {
-		launchMu.Lock()
-		if started >= total || ctx.Err() != nil {
-			launchMu.Unlock()
-			return
-		}
-		slot := started
-		started++
-		workers.Add(1)
-		launchMu.Unlock()
-		go func() {
-			defer workers.Done()
-			_ = runSessionLoop(ctx, cfg, pool.slot(slot), retry)
-		}()
-	}
-	pool.onReady = func() {
-		if adaptive {
-			launch()
-		}
-	}
-	launch()
-	if !adaptive {
-		for range total - 1 {
-			launch()
-		}
-	}
-	workers.Wait()
-	return nil
-}
-
-type targetPoolReporter struct {
-	mu       sync.Mutex
-	total    int
-	ready    []bool
-	expanded []bool
-	reporter telemetry.Reporter
-	onReady  func()
-}
-
-func newTargetPoolReporter(total int, reporter telemetry.Reporter) *targetPoolReporter {
-	return &targetPoolReporter{
-		total:    total,
-		ready:    make([]bool, total),
-		expanded: make([]bool, total),
-		reporter: reporter,
-	}
-}
-
-func (p *targetPoolReporter) slot(slot int) telemetry.Reporter {
-	return telemetry.ReporterFunc(func(event telemetry.Event) {
-		p.report(slot, event)
-	})
-}
-
-func (p *targetPoolReporter) report(slot int, event telemetry.Event) {
-	var readyCallback func()
-	p.mu.Lock()
-	switch event.Type {
-	case "client_connecting":
-		p.mu.Unlock()
-		return
-	case "target_ready":
-		if !p.ready[slot] {
-			p.ready[slot] = true
-		}
-		if !p.expanded[slot] {
-			p.expanded[slot] = true
-			readyCallback = p.onReady
-		}
-		connected := p.readyCount()
-		event.Type = "target_pool_ready"
-		event.State = "running"
-		event.Message = fmt.Sprintf("Target session pool is ready: %d of %d sessions connected", connected, p.total)
-	case "client_reconnecting":
-		if p.ready[slot] {
-			p.ready[slot] = false
-		}
-		connected := p.readyCount()
-		if connected > 0 {
-			event.Type = "target_pool_degraded"
-			event.State = "running"
-			event.Message = fmt.Sprintf("Target session pool is degraded: %d of %d sessions connected. %s", connected, p.total, event.Message)
-		}
-	}
-	p.mu.Unlock()
-	telemetry.Emit(p.reporter, event)
-	if readyCallback != nil {
-		readyCallback()
-	}
-}
-
-func targetPoolConnectingMessage(pool, total int) string {
-	if pool == config.DefaultTargetPool {
-		return fmt.Sprintf("Connecting adaptive Target session pool (up to %d sessions)", total)
-	}
-	return fmt.Sprintf("Connecting Target session pool (%d sessions)", pool)
-}
-
-func (p *targetPoolReporter) readyCount() int {
-	ready := 0
-	for _, connected := range p.ready {
-		if connected {
-			ready++
-		}
-	}
-	return ready
-}
-
-func RunOnce(ctx context.Context, cfg config.Config, reporter telemetry.Reporter) error {
-	_, err := runAttempt(ctx, cfg, reporter)
-	return err
-}
-
-func runAttempt(ctx context.Context, cfg config.Config, reporter telemetry.Reporter) (time.Duration, error) {
-	role, err := protocolRole(cfg.Role)
-	if err != nil {
-		return 0, err
-	}
-	secureConn, err := dialSecure(ctx, cfg, role)
+	secureConn, err := dialSecure(ctx, spec.cfg, spec.role, spec.token, metadata)
 	if err != nil {
 		return 0, err
 	}
@@ -250,15 +134,11 @@ func runAttempt(ctx context.Context, cfg config.Config, reporter telemetry.Repor
 	}()
 	defer close(stopWatcher)
 
-	if role == protocol.RoleEdge {
-		err = runEdge(ctx, cfg, secureConn, reporter)
-	} else {
-		err = runTarget(ctx, cfg, secureConn, reporter)
-	}
+	err = spec.handler(ctx, secureConn, reporter)
 	return time.Since(connectedAt), err
 }
 
-func dialSecure(ctx context.Context, cfg config.Config, role protocol.Role) (net.Conn, error) {
+func dialSecure(ctx context.Context, cfg config.Config, role protocol.Role, token string, metadata protocol.RelayMetadata) (net.Conn, error) {
 	remote, err := config.NormalizeRemote(cfg.Remote)
 	if err != nil {
 		return nil, err
@@ -272,9 +152,7 @@ func dialSecure(ctx context.Context, cfg config.Config, role protocol.Role) (net
 		},
 	}
 	header := make(http.Header)
-	if cfg.Token != "" {
-		header.Set("Authorization", "Bearer "+cfg.Token)
-	}
+	header.Set("Authorization", "Bearer "+token)
 	ws, response, err := dialer.DialContext(ctx, remote, header)
 	if err != nil {
 		if response != nil {
@@ -286,14 +164,15 @@ func dialSecure(ctx context.Context, cfg config.Config, role protocol.Role) (net
 		}
 		return nil, fmt.Errorf("dial relay: %w", err)
 	}
+	secret, channel := protocol.DeriveCredentials(token)
 	secure, err := protocol.OpenSecureClientWithMetadata(
 		ctx,
 		ws,
-		[]byte(cfg.Secret),
-		cfg.Tunnel.Remote,
+		secret,
+		channel,
 		role,
-		cfg.Token,
-		relayMetadata(cfg, role),
+		token,
+		metadata,
 	)
 	if err != nil {
 		ws.Close()
@@ -302,135 +181,48 @@ func dialSecure(ctx context.Context, cfg config.Config, role protocol.Role) (net
 	return secure, nil
 }
 
-func runEdge(ctx context.Context, cfg config.Config, conn net.Conn, reporter telemetry.Reporter) error {
-	session, err := yamux.Client(conn, yamuxConfig())
-	if err != nil {
-		return fmt.Errorf("start edge multiplexer: %w", err)
-	}
-	streams := newStreamGroup(maxConcurrentStreams)
-
-	listener, err := net.Listen("tcp", cfg.Listen)
-	if err != nil {
-		return &localListenError{address: cfg.Listen, err: err}
-	}
-	defer func() {
-		_ = listener.Close()
-		_ = session.Close()
-		streams.waitForAll()
-	}()
-	telemetry.Emit(reporter, telemetry.Event{
-		Type:    "edge_listening",
-		Level:   "info",
-		State:   "running",
-		Message: "Encrypted route is ready",
-		Listen:  listener.Addr().String(),
-	})
-
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-session.CloseChan():
-		}
-		_ = listener.Close()
-	}()
-
-	for {
-		local, err := listener.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			if session.IsClosed() {
-				return errSessionClosed
-			}
-			return fmt.Errorf("accept local connection: %w", err)
-		}
-		if !streams.goIfAvailable(func() {
-			defer local.Close()
-			stream, err := session.OpenStream()
-			if err != nil {
-				event := telemetry.Event{
-					Type:    "stream_error",
-					Level:   "error",
-					State:   "running",
-					Message: "This local connection could not open an encrypted stream. Retry it; if this repeats, check peer health and reduce simultaneous connection attempts.",
-				}
-				if session.IsClosed() {
-					event.State = "connecting"
-					event.Message = "This local connection could not be forwarded because the encrypted route was interrupted. MoleX is reconnecting; retry after the route is ready."
-					event.ClearListen = true
-				}
-				telemetry.Emit(reporter, event)
-				return
-			}
-			telemetry.Emit(reporter, telemetry.Event{Type: "stream_opened", Level: "info", State: "running", Message: "Local connection routed"})
-			bridge(local, stream)
-		}) {
-			_ = local.Close()
-			telemetry.Emit(reporter, streamLimitEvent())
-		}
-	}
+// groupStateAggregator merges the runtime states of several token-group
+// session loops so the console state reflects the healthiest group instead
+// of whichever loop reported last.
+type groupStateAggregator struct {
+	mu       sync.Mutex
+	reporter telemetry.Reporter
+	states   map[string]string
 }
 
-func runTarget(ctx context.Context, cfg config.Config, conn net.Conn, reporter telemetry.Reporter) error {
-	session, err := yamux.Server(conn, yamuxConfig())
-	if err != nil {
-		return fmt.Errorf("start target multiplexer: %w", err)
-	}
-	streams := newStreamGroup(maxConcurrentStreams)
-	defer func() {
-		_ = session.Close()
-		streams.waitForAll()
-	}()
-	telemetry.Emit(reporter, telemetry.Event{
-		Type:    "target_ready",
-		Level:   "info",
-		State:   "running",
-		Message: "Target is ready to receive streams",
-	})
-
-	for {
-		stream, err := session.AcceptStream()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			if session.IsClosed() {
-				return errSessionClosed
-			}
-			return fmt.Errorf("accept encrypted stream: %w", err)
-		}
-		if !streams.goIfAvailable(func() {
-			defer stream.Close()
-			dialer := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-			target, err := dialer.DialContext(ctx, "tcp", cfg.Tunnel.Local)
-			if err != nil {
-				stream.Close()
-				telemetry.Emit(reporter, telemetry.Event{
-					Type:    "target_dial_error",
-					Level:   "error",
-					State:   "running",
-					Message: targetServiceUnavailableMessage(cfg.Tunnel.Local, err),
-				})
-				return
-			}
-			telemetry.Emit(reporter, telemetry.Event{Type: "stream_opened", Level: "info", State: "running", Message: "Encrypted stream reached target service"})
-			bridge(target, stream)
-		}) {
-			_ = stream.Close()
-			telemetry.Emit(reporter, streamLimitEvent())
-		}
-	}
+func newGroupStateAggregator(reporter telemetry.Reporter) *groupStateAggregator {
+	return &groupStateAggregator{reporter: reporter, states: make(map[string]string)}
 }
 
-func protocolRole(role string) (protocol.Role, error) {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case config.RoleEdge:
+func (a *groupStateAggregator) group(name string) telemetry.Reporter {
+	return telemetry.ReporterFunc(func(event telemetry.Event) {
+		if event.State != "" {
+			a.mu.Lock()
+			a.states[name] = event.State
+			running := false
+			for _, state := range a.states {
+				if state == "running" {
+					running = true
+					break
+				}
+			}
+			a.mu.Unlock()
+			if running {
+				event.State = "running"
+			}
+		}
+		telemetry.Emit(a.reporter, event)
+	})
+}
+
+func protocolRole(mode string) (protocol.Role, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case config.ModeEdge:
 		return protocol.RoleEdge, nil
-	case config.RoleTarget:
+	case config.ModeTarget:
 		return protocol.RoleTarget, nil
 	default:
-		return 0, errors.New("role must be edge or target")
+		return 0, errors.New("mode must be target or edge")
 	}
 }
 
@@ -446,24 +238,19 @@ func yamuxConfig() *yamux.Config {
 	return cfg
 }
 
-func relayMetadata(cfg config.Config, role protocol.Role) protocol.RelayMetadata {
-	name := strings.TrimSpace(cfg.Tunnel.Name)
+func nodeName(cfg config.Config, role protocol.Role) string {
+	name := strings.TrimSpace(cfg.Name)
 	if name == "" {
 		name, _ = os.Hostname()
 	}
 	if name == "" {
 		name = role.String()
 	}
-	endpoint := cfg.Tunnel.Local
-	if role == protocol.RoleEdge {
-		endpoint = cfg.Listen
-	}
-	return protocol.RelayMetadata{
-		Name:          name,
-		Endpoint:      endpoint,
-		RelayEndpoint: relayDisplayEndpoint(cfg.Remote),
-		Platform:      runtime.GOOS + "/" + runtime.GOARCH,
-	}
+	return name
+}
+
+func platformLabel() string {
+	return runtime.GOOS + "/" + runtime.GOARCH
 }
 
 func relayDisplayEndpoint(remote string) string {
@@ -475,6 +262,26 @@ func relayDisplayEndpoint(remote string) string {
 	parsed.ForceQuery = false
 	parsed.Fragment = ""
 	return parsed.String()
+}
+
+func newInstanceID() string {
+	buffer := make([]byte, 8)
+	if _, err := rand.Read(buffer); err != nil {
+		return fmt.Sprintf("pid-%d", os.Getpid())
+	}
+	return hex.EncodeToString(buffer)
+}
+
+// halfCloseStream adapts a yamux stream to the bridge's half-close
+// protocol: yamux Close sends FIN while the read side stays usable, which
+// matches CloseWrite semantics on a TCP connection. Without this, a backend
+// that closes first would never propagate EOF to the other end.
+type halfCloseStream struct {
+	*yamux.Stream
+}
+
+func (s halfCloseStream) CloseWrite() error {
+	return s.Stream.Close()
 }
 
 func streamLimitEvent() telemetry.Event {

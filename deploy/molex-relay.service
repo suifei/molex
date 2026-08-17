@@ -1,0 +1,24 @@
+[Unit]
+Description=MoleX relay data plane
+Documentation=https://github.com/suifei/molex
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=molex
+Group=molex
+UMask=0077
+WorkingDirectory=/var/lib/molex
+ExecStart=/usr/local/bin/molex serve --config /var/lib/molex/molex.json
+Restart=always
+RestartSec=2
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/molex
+
+[Install]
+WantedBy=multi-user.target

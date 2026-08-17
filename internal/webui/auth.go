@@ -147,6 +147,87 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// requireAccess gates API handlers. The relay console uses password
+// sessions; target and edge consoles accept only local browser requests.
+func (s *Server) requireAccess(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.relayConsole() {
+			s.requireSession(next)(w, r)
+			return
+		}
+		if !s.localRequestAllowed(w, r) {
+			return
+		}
+		next(w, r)
+	}
+}
+
+// localOnly applies the local-console checks on endpoints that must remain
+// reachable before authentication (session info and role bootstrap).
+func (s *Server) localOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.relayConsole() && !s.localRequestAllowed(w, r) {
+			return
+		}
+		next(w, r)
+	}
+}
+
+// localRequestAllowed defends the login-free target/edge consoles: only
+// loopback TCP peers, local host names (anti DNS-rebinding), and same-origin
+// browser contexts may call the API.
+func (s *Server) localRequestAllowed(w http.ResponseWriter, r *http.Request) bool {
+	if !remoteIsLoopback(r) {
+		writeError(w, http.StatusForbidden, "this console only accepts loopback connections; use SSH forwarding for remote access")
+		return false
+	}
+	if !hostIsLocal(r.Host) {
+		writeError(w, http.StatusForbidden, "this console only accepts local host names")
+		return false
+	}
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin request rejected")
+		return false
+	}
+	return true
+}
+
+// requireMutation guards state-changing requests. Relay sessions use their
+// per-session CSRF token; local consoles use the per-boot console token.
+func (s *Server) requireMutation(w http.ResponseWriter, r *http.Request) bool {
+	if s.relayConsole() {
+		return requireCSRF(w, r)
+	}
+	provided := r.Header.Get("X-MoleX-CSRF")
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(s.bootCSRF)) != 1 {
+		writeError(w, http.StatusForbidden, "invalid CSRF token")
+		return false
+	}
+	return true
+}
+
+func remoteIsLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && ip.IsLoopback()
+}
+
+func hostIsLocal(hostport string) bool {
+	host := strings.TrimSpace(hostport)
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func (s *Server) sessionFromRequest(r *http.Request) (authenticatedSession, bool) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil || cookie.Value == "" {
