@@ -1,90 +1,225 @@
 <p align="center">
-  <img src="frontend/public/molex-mark.svg" width="104" height="104" alt="MoleX logo">
+  <img src="frontend/public/molex-mark.svg" width="48" height="48" alt="MoleX">
+  &nbsp;<strong>MoleX</strong>
+  &nbsp;·&nbsp;
+  English · <a href="README.md">简体中文</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/suifei/molex/releases/tag/v0.4.0"><img alt="v0.4.0" src="https://img.shields.io/badge/v0.4.0-30A46C?style=flat-square"></a>
 </p>
 
-<h1 align="center">MoleX</h1>
+# The system is in the office. The people are not. You cannot put that machine on the internet.
 
-<p align="center"><strong>One token delivers your intranet services to every device that needs them.</strong><br>Relay, Target, and Edge share one Go binary, managed from a browser or the CLI.</p>
+The usual stuck point in R&D: the demo, the SSH box, the intranet API live only on an office computer. A remote client needs to click through it. A teammate on a train needs a shell. A frontend in another city needs the model.
+
+Opening a public port is dangerous. A full VPN is heavy, and they see more than they should. Standing up a cloud staging copy is slow, and it is not “the box we are actually building on.”
+
+**MoleX lets them open a local address on their own computer and reach exactly the intranet service you named. The public internet gets `443` only. When you are done, you take the pass back and the group drops.**
 
 <p align="center">
-  <a href="https://github.com/suifei/molex/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/suifei/molex/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <a href="https://github.com/suifei/molex/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/suifei/molex?display_name=tag&sort=semver&style=flat-square"></a>
-  <img alt="Go 1.25 or newer" src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat-square&logo=go&logoColor=white">
-  <img alt="TCP over WSS" src="https://img.shields.io/badge/transport-TCP%20over%20WSS-30A46C?style=flat-square">
-  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-24292F?style=flat-square"></a>
+  <img src="docs/images/readme/case-client-preview-en.jpg" alt="Office publishes the demo, a cloud Relay opens only 443, the client in a hotel opens 127.0.0.1:18080 and sees the same system" width="100%">
 </p>
+
+They open `http://127.0.0.1:18080` and see the unfinished system on the office `:8080`. They never join the office LAN. You never publish `:8080`.
+
+**Do this, left to right in the picture:**
+
+1. Start **Relay** (the doorman) in the cloud and mint a token.
+2. Start **Target** (the front desk) on the office box and register `127.0.0.1:8080`.
+3. Send the token. They start **Edge** (the door on their laptop) and check the demo.
+4. They use the local port. When the demo ends, disable the token.
 
 <p align="center">
-  <a href="#quick-start"><strong>Quick start</strong></a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="#migrating-from-v1">Migrating from v1</a> ·
-  <a href="#public-documentation">Public documentation</a> ·
-  <a href="docs/security.md">Security model</a>
+  <img src="docs/images/readme/case-roles-en.jpg" alt="Relay is the doorman, Target registers office services, Edge opens a door on the client laptop" width="100%">
 </p>
 
-<p align="center"><sub><strong>README:</strong> English · <a href="README.md">简体中文</a></sub></p>
+One pass reaches **one Target**. Edges can be many. Another laptop means another Edge — not the whole office network.
 
----
+### Same problem, different room
 
-MoleX v2 organizes the whole network around **token groups**: the relay administrator creates tokens in the Web console; **one Target** holding a token publishes the intranet services it can reach (multiple `ip:port` entries), and **any number of Edges** with the same token pick services from the live catalog in their browser and map them to local ports. Both Target and Edges dial out to the same `wss://` address, so the public host usually exposes only HTTPS `443` through Caddy.
+**You are away and need the office Linux box — without publishing port 22.**
 
-The relay handles admission, grouping, and opaque binary-frame forwarding. The data-plane implementation never decrypts tunneled content and counts ciphertext only. The v2 trust model is stated honestly: tokens are issued and stored by the relay administrator, so **the relay operator is inside the trust boundary** (see the [security model](docs/security.md)).
+<p align="center">
+  <img src="docs/images/readme/case-ssh-en.jpg" alt="ssh -p 2222 user@127.0.0.1 back to the office dev box" width="100%">
+</p>
 
-## Why MoleX
+```bash
+ssh -p 2222 user@127.0.0.1
+```
 
-| Design choice | What it means in practice |
-| --- | --- |
-| **One token connects everything** | Target and Edge only need the `wss://` address plus a token. No key exchange, no channel naming. |
-| **Live service catalog** | When the Target publishes or withdraws a service, every online Edge's catalog and local mappings follow instantly, no restarts. |
-| **1 Target + N Edges** | Each token accepts exactly one Target instance (duplicates are rejected with a clear reason); Edges are unlimited. One Target or Edge process can join several token groups. |
-| **Single public entry** | Concurrent TCP streams share the WSS through yamux; no per-service public ports. |
-| **Allowlisted forwarding** | The Target dials only addresses it published itself; an Edge cannot craft a request outside the catalog. |
-| **One binary, three roles** | The same cross-platform Go program runs Relay, Target, or Edge selected by `mode`, with one small JSON file. |
-| **Browser management on all three ends** | The relay console has password login; Target/Edge local consoles are login-free (loopback + same-origin + CSRF protected), bilingual, light/dark. |
-| **Actionable recovery** | Capped exponential backoff, explicit token-disable/kick messages, automatic recovery from occupied ports, bounded shutdown. |
+Remote Desktop is the same: the office registers `3389`, you connect to `127.0.0.1:13389`.
 
-MoleX works for OpenAI-compatible APIs, SSH, RDP, HTTP services, databases, and other TCP applications.
+**A remote frontend needs one office API — not the whole intranet.**
 
-> [!IMPORTANT]
-> MoleX currently transports TCP only. It does not provide native UDP, anonymity, or traffic-analysis resistance, and it does not grant any right to bypass laws, terms of service, or network policy.
+Register that one `ip:port`. Point `baseURL` at `http://127.0.0.1:18080/v1`. One service, not the LAN.
 
-## How it works
+### What it solves — and what it does not
+
+| You are stuck because | The usual fix is awkward | MoleX |
+| --- | --- | --- |
+| Remote people cannot see an unfinished system | Public ports, a full VPN, a rushed cloud staging | They open a local address; public `443` only |
+| You need SSH / RDP from the road | `22` / `3389` on the internet | You connect to localhost; the office port stays private |
+| Remote code must hit one intranet API | You hand over the LAN or the whole machine | You register that one service |
+| The demo ended but access did not | Ports still open, VPN accounts still live | Disable the token; the group drops |
+| Several clients need the same demo | One public mapping each | One pass, many Edges |
+
+Not for UDP games, voice, or HTTP/3. Not an anonymity network. SSH and Windows still own login. MoleX only moves TCP.
+
+<p align="center">
+  <a href="https://github.com/suifei/molex/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/suifei/molex/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/suifei/molex/releases/latest"><img alt="Latest" src="https://img.shields.io/github/v/release/suifei/molex?display_name=tag&sort=semver&style=flat-square"></a>
+  <a href="https://github.com/suifei/molex/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/suifei/molex?style=flat-square&logo=github"></a>
+  <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-24292F?style=flat-square"></a>
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="docs/user-guide.md">User guide</a>
+</p>
+
+## Architecture
+
+One token is one trust group. Groups are fully isolated: they cannot see or reach each other.
+
+```mermaid
+flowchart TB
+    subgraph Edges["Hosts that use the services"]
+        AppA["Local app"]
+        EdgeA["Edge A<br/>catalog picks · local ports"]
+        AppB["Local app"]
+        EdgeB["Edge B"]
+        AppA --- EdgeA
+        AppB --- EdgeB
+    end
+
+    subgraph Public["Public host · 443/tcp only"]
+        Caddy["Caddy<br/>TLS 1.3"]
+        Relay["MoleX Relay<br/>127.0.0.1:8080"]
+        Tokens["Token registry"]
+        Caddy --- Relay
+        Relay --- Tokens
+    end
+
+    subgraph Intranet["Host that can reach backends"]
+        Target["MoleX Target<br/>catalog + allowlisted dial"]
+        Svc["Intranet ip:port<br/>SSH / API / DB …"]
+        Target --- Svc
+    end
+
+    EdgeA -->|"outbound WSS + token"| Caddy
+    EdgeB -->|"outbound WSS + token"| Caddy
+    Target -->|"outbound WSS + token"| Caddy
+```
+
+The relay does **not** open a public port per tunnel. Every group shares Caddy's `/ws/session`. A second Target on the same token is rejected. A crashed Target can rejoin after server keepalive (20s ping / 75s read deadline) frees the slot.
+
+### Groups stay isolated
 
 ```mermaid
 flowchart LR
-    App["Local app"] <-->|"TCP"| Edge["MoleX Edge<br/>catalog picks · local mappings"]
-    Edge -->|"WSS + token"| Caddy["Caddy<br/>public entry :443"]
-    Caddy <-->|"loopback /ws/session"| Relay["MoleX Relay<br/>token groups · ciphertext forwarding"]
-    Target["MoleX Target<br/>publishes the service catalog"] -->|"WSS + token"| Caddy
-    Target <-->|"TCP"| Service["Intranet services (multiple ip:port)"]
+    subgraph Office["Token office"]
+        T1["Target home NAS"]
+        E1["Edge office"]
+        E2["Edge laptop"]
+        T1 --- E1
+        T1 --- E2
+    end
+
+    subgraph Lab["Token lab"]
+        T2["Target lab"]
+        E3["Edge desk"]
+        T2 --- E3
+    end
+
+    Relay["Relay<br/>copies ciphertext per token"]
+    Office -.-> Relay
+    Lab -.-> Relay
 ```
 
-1. The relay administrator creates a token and hands it to the Target and the Edges.
-2. The Target joins with the token and publishes its configured service catalog over an end-to-end encrypted control stream.
-3. Each Edge joins with the same token, sees the catalog, checks services, and assigns local ports (random by default, editable; loopback by default with an optional LAN toggle).
-4. Local applications connect to the mapped ports and traffic flows full duplex:
+An office Edge never sees the lab catalog. A crafted service-id preamble is still rejected by the Target allowlist.
+
+### One process, several groups
+
+```mermaid
+flowchart LR
+    subgraph OneProcess["Single Target process"]
+        P["molex connect"]
+        P --> S1["office session pool"]
+        P --> S2["lab session pool"]
+    end
+
+    S1 --> C1["catalog: web visible to office only"]
+    S2 --> C2["catalog: empty or a different set for lab"]
+```
+
+Empty `services[].groups` means every group this process joined. A listed set is the only groups that can see or dial that service. When an Edge joins more than one group, each mapping needs `group`.
+
+### Three roles
+
+| `mode` | Where | Duty | Console |
+| --- | --- | --- | --- |
+| `relay` | Public hostname | Admit tokens, pair 1 Target + N Edges, copy ciphertext | Password login: create / rotate / disable / delete, audit, peers, kick |
+| `target` | Host that reaches backends | Publish the catalog; dial only published addresses | Login-free loopback: `wss` + token, live service and visibility edits |
+| `edge` | Host that uses the services | Map published services to local ports | Login-free loopback: catalog picks, ports, LAN toggle |
+
+The management listener is loopback-only (prefers `127.0.0.1:9090`). Reach it with an HTTPS reverse proxy or SSH forward. Target / Edge also require a local Host header (anti DNS-rebinding).
+
+## How traffic moves
+
+Local apps speak plain TCP to an Edge mapping. Past the public edge, everything is an encrypted record:
+
+```mermaid
+flowchart LR
+    TCP["App TCP"] --> Yamux["yamux stream<br/>service-id preamble"]
+    Yamux --> GCM["AES-256-GCM"]
+    GCM --> WSS["WSS binary frame"]
+    WSS --> TLS["Caddy TLS 1.3"]
+    TLS --> Copy["Relay copies ciphertext"]
+    Copy --> Dial["Target allowlist dial"]
+    Dial --> Backend["Backend TCP"]
+```
 
 ```text
-TCP stream -> yamux logical stream (with a service-id preamble) -> AES-256-GCM record -> WebSocket binary frame -> TLS 1.3
+app TCP
+  → Edge mapping listener
+  → yamux (control stream = catalog / data stream = service id)
+  → AES-256-GCM record
+  → WebSocket binary frame
+  → TLS 1.3 (Caddy :443)
+  → Relay ciphertext copy
+  → Target allowlist dial
+  → intranet service
 ```
 
-End-to-end keys are derived from the token via HKDF; ephemeral X25519 keys provide forward secrecy. The relay observes connection metadata, timing, and frame sizes; see [architecture](docs/architecture.md) and the [security model](docs/security.md) for the full trust boundary.
+```mermaid
+sequenceDiagram
+    participant App as Local app
+    participant Edge as Edge
+    participant Relay as Relay
+    participant Target as Target
+    participant Svc as Intranet service
 
-## Modes and responsibilities
+    Edge->>Relay: WSS + bearer token
+    Target->>Relay: WSS + bearer token
+    Note over Edge,Target: X25519 + HKDF + AES-256-GCM<br/>PSK from the token · Relay never sees plaintext
+    Target-->>Edge: encrypted control stream: catalog
+    App->>Edge: TCP to mapped port
+    Edge->>Target: data stream + service id
+    Target->>Svc: dial published addresses only
+    Svc-->>App: full-duplex TCP
+```
 
-| Configuration | Runtime duty | Management |
-| --- | --- | --- |
-| `mode: "relay"` | Public rendezvous, token admission and grouping, ciphertext forwarding. | Web console (password login): token CRUD, rotation with a grace window, audit log, per-token online summary, disconnect, live activity. |
-| `mode: "target"` | Publishes the service catalog and dials allowlisted backends per stream. | Local Web console (login-free): `wss` plus one or more tokens, per-service group visibility, live catalog edits. |
-| `mode: "edge"` | Opens local mapping listeners and forwards connections to published services. | Local Web console (login-free): `wss` plus one or more tokens, grouped catalog picks, port assignment, state and traffic. |
+- End-to-end key: `PSK = HKDF-SHA256(token, "molex/v2/e2e-psk")`, plus ephemeral X25519 for forward secrecy.
+- Catalog and addressing stay inside ciphertext. The relay sees metadata, timing, and frame sizes.
+- Each Edge gets its own encrypted session. The Target grows an adaptive pool (one hot standby, cap 65,535) so keys and yamux state never mix.
+- At most 256 concurrent streams per process / session. WebSocket compression stays off for tunnel records.
+
+Full handshake and trust boundary: [architecture](docs/architecture.md).
 
 ## Quick start
 
 ### 1. Download or build
 
-Prebuilt `amd64`/`arm64` packages for Windows, macOS, and Linux are on [GitHub Releases](https://github.com/suifei/molex/releases/latest), each with `SHA256SUMS`.
+Prebuilt `amd64` / `arm64` packages for Windows, macOS, and Linux are on [GitHub Releases](https://github.com/suifei/molex/releases/latest), each with `SHA256SUMS`.
 
-Building from source needs Go 1.25+ and Node.js 20+:
+From source (Go 1.25+, Node.js 20+):
 
 ```bash
 cd frontend
@@ -94,36 +229,34 @@ cd ..
 go build -trimpath -ldflags "-s -w -X main.version=0.4.0" -o bin/molex .
 ```
 
-Build the frontend first so the current Web assets are embedded into the Go binary.
+Build the frontend first so current Web assets are embedded.
 
-### 2. Start the public relay
+### 2. Public relay
 
 ```bash
-molex config init --mode relay --config relay.json   # generates the config with a first token
+molex config init --mode relay --config relay.json
 molex web --config relay.json --password-file ./web-password --autostart
 ```
 
-The relay data plane listens on `127.0.0.1:8080`; the management console prefers `127.0.0.1:9090` (advancing automatically if busy). Sign in to create, annotate, disable, or delete tokens; values are masked until revealed for copying. Publish `/ws/session` and the console over HTTPS with the verified [Caddy example](examples/Caddyfile) and the [deployment guide](docs/deployment-caddy.md).
+Data plane `127.0.0.1:8080`, console prefers `127.0.0.1:9090` (advances if busy). Sign in, create a token, reveal and copy it. Publish `/ws/session` and the console with the [Caddy example](examples/Caddyfile) and the [deployment guide](docs/deployment-caddy.md).
 
-### 3. Start the intranet target
+### 3. Intranet target
 
-On a machine that can reach the backend services:
-
-```bash
-molex web
-```
-
-Choose "Target" in the local console, enter the `wss://` address and token, start, then add the intranet addresses to publish (for example `10.188.200.16:30927`). Saving publishes immediately — edits while running apply live.
-
-### 4. Start edges (any number of devices)
-
-On every machine that needs the services:
+On a machine that can reach the backends:
 
 ```bash
 molex web
 ```
 
-Choose "Edge", enter the same `wss://` address and token, and start. Once the catalog loads, check the services you need: the console suggests a free local port (editable), and each mapping has its own "LAN visible" toggle (binds `0.0.0.0`). When a mapping shows "Listening", local applications can connect, for example:
+Choose **Target**, paste `wss://…/ws/session` and the token, start, then add services (for example `10.188.200.16:30927`). Saving publishes immediately; live edits apply without a restart.
+
+### 4. Local edges (any number)
+
+```bash
+molex web
+```
+
+Choose **Edge**, paste the same WSS URL and token. Check services when the catalog appears; the console suggests a free port. Turn on **LAN visible** (`0.0.0.0`) only when other devices on that network must connect. When a mapping shows **Listening**:
 
 ```bash
 ssh -p 2222 user@127.0.0.1
@@ -131,24 +264,22 @@ ssh -p 2222 user@127.0.0.1
 
 ### 5. Reach a console remotely
 
-Management listeners are loopback-only. Use an HTTPS reverse proxy for the relay console, or SSH forwarding:
-
 ```bash
 ssh -N -L 9090:127.0.0.1:9090 user@molex-host
 ```
 
-Consoles use secure session cookies, CSRF protection, same-origin checks, and login rate limiting; the login-free Target/Edge consoles additionally require loopback peers and local host names (anti DNS-rebinding).
+The Relay console uses session cookies, CSRF, same-origin checks, and login rate limits. Target / Edge skip login but accept loopback peers only.
 
 ## Configuration
 
-Each role uses only a few fields (unknown fields are rejected):
+Unknown fields are rejected. Each role keeps a small surface:
 
 ```json
 {
   "mode": "relay",
   "listen": "127.0.0.1:8080",
   "tokens": [
-    { "id": "tok-example", "token": "mx2_generated-value", "note": "office", "disabled": false }
+    { "id": "tok-example", "token": "mx2_generated-value", "note": "office" }
   ]
 }
 ```
@@ -179,16 +310,18 @@ Each role uses only a few fields (unknown fields are rejected):
 
 | Field | Roles | Meaning |
 | --- | --- | --- |
-| `mode` | all | `relay`, `target`, or `edge`. |
-| `listen` | relay | Relay data-plane listen address (loopback, behind Caddy). |
-| `remote` | target / edge | Relay `wss://` address; plain `ws://` is loopback-only. |
-| `token` | target / edge | Single-group access token (≥16 chars, `mx2_` prefix). Mutually exclusive with `tokens[]`. |
-| `name` | target / edge | Display name in consoles; defaults to the hostname. |
-| `tokens[]` | relay / target / edge | Relay: issued records, including `previousToken` during rotation. Clients: `{id, token}` group memberships. |
-| `services[]` | target | Published services: stable `id`, `name`, `address`; optional `groups` restricts visibility. |
-| `mappings[]` | edge | Local mappings: `service`, `port`, `lan`; `group` is required when several groups are joined. |
+| `mode` | all | `relay` / `target` / `edge` |
+| `listen` | relay | Loopback data plane, behind Caddy |
+| `remote` | target / edge | `wss://`; plain `ws://` is loopback-only |
+| `token` | target / edge | Single-group token (`mx2_` prefix). Exclusive with `tokens[]` |
+| `name` | target / edge | Console label; defaults to hostname |
+| `tokens[]` | all | Relay: issued records (including rotation grace). Clients: `{id, token}` |
+| `services[]` | target | `id` / `name` / `address`; optional `groups` |
+| `mappings[]` | edge | `service` / `port` / `lan`; `group` required when several groups are joined |
 
-## CLI reference
+Verified starting points live in [`examples/`](examples/).
+
+## CLI
 
 ```text
 molex serve   --config ./relay.json
@@ -200,58 +333,50 @@ molex config check --config ./molex.json
 molex version
 ```
 
-The relay's Web password can also come from `MOLEX_WEB_PASSWORD`; Target/Edge consoles need no password. Pass tokens only through the relay console or configuration files — never in node names, logs, or screenshots.
+The Relay password may also come from `MOLEX_WEB_PASSWORD`. Never put tokens in node names, logs, or screenshots.
 
 ## Migrating from v1
 
-v2 is a clean break: `mode: "punch"` and the `role`/`secret`/`tunnel` fields are no longer supported, and legacy files fail at startup with explicit migration guidance.
+v2 does not auto-migrate. `mode: "punch"` and `role` / `secret` / `tunnel` fail at startup and point to the [upgrade guide](docs/upgrade-guide.md).
 
-1. Relay: `molex config init --mode relay --force`, then create one token per Target/Edge group in the console.
-2. Former Target machine: `molex config init --mode target --force`, enter `wss` + token, and add each old `tunnel.local` (and every rule's `local`) as a published service.
-3. Former Edge machines: `molex config init --mode edge --force`, enter the same token, check the services, and reuse the old local ports.
-4. The old `secret` and `channel` concepts are replaced by token groups and can be retired.
+1. Relay: `molex config init --mode relay --force`, then create one token per trust group.
+2. Former Target: `molex config init --mode target --force`, add each old `tunnel.local` (and every rule `local`) as a published service.
+3. Former Edges: `molex config init --mode edge --force`, map the published services to the ports you used before.
+4. Discard v1 `secret` and `channel`. Mixed v1/v2 fleets do not interoperate.
 
 ## Stability and recovery
 
-Edges and Targets reconnect with capped exponential backoff from about 1 second up to 15 seconds, with 20% jitter, resetting after 30 seconds of healthy session time.
+- Retry: about 1s → 15s, ±20% jitter, reset after 30s healthy.
+- Mapping listeners exist only while the route is ready and the service is published; they close when the Target drops or withdraws a service and reopen on recovery.
+- An occupied port affects only that mapping and recovers about 3 seconds after it is freed.
+- Disabled tokens, duplicate Targets, and kicks name the next operator action.
+- Shutdown is bounded: listeners and sessions first, then tracked local connections, then admitted work.
+- Linux: `deploy/molex-relay.service`; without systemd: `deploy/molex-keepalive.sh`.
 
-Mapping listeners exist only while the encrypted route is ready and the service is still published: when the Target drops or withdraws a service, the port closes immediately with a reason and reopens automatically on recovery. An occupied local port affects only that mapping and recovers within about 3 seconds of being freed. Disabled tokens, duplicate Targets, and administrative kicks all produce messages that name the next operator action.
+## Security notes
 
-Each Edge process handles at most 256 concurrent yamux streams; connections beyond the bound close safely with advice. Shutdown closes listeners and encrypted sessions first, then tracked local connections, then waits for admitted workers — no leftover socket goroutines. The relay's server-side keepalive (20 s ping / 75 s read deadline) clears dead connections promptly so a crashed Target can rejoin fast. On Linux, keep the data plane up with `deploy/molex-relay.service`; elsewhere use `deploy/molex-keepalive.sh`. Token rotation keeps the previous value valid for 1–30 days (3 by default), and administrative actions are written to a JSONL audit log beside the configuration.
+1. Unknown token → HTTP 401; disabled → 403. The URL must be `/ws/session`.
+2. Hello is a fixed 128 bytes with no literal token or product marker.
+3. The relay pre-computes the route from the token and enforces one Target instance via the metadata instance id.
+4. Catalog, service ids, and dial status stay inside AES-256-GCM; the relay has no payload-decrypt path.
+5. The Target refuses every unpublished address.
+6. Remote WSS needs a valid certificate.
 
-## Security and protocol
-
-1. Every client establishes TLS through Caddy and upgrades to a binary WebSocket with a bearer token; unknown tokens get 401 and disabled tokens get 403.
-2. The end-to-end PSK is derived from the token via HKDF-SHA256 with domain separation; the 128-byte hello carries an opaque route id, role, ephemeral X25519 key, nonce, and PSK proof.
-3. The relay pre-computes each token's route, rejects mismatched hellos, and enforces one Target instance per token via the metadata instance id.
-4. Peers verify the handshake, derive directional keys, and confirm them; the service catalog and per-stream service addressing travel inside AES-256-GCM records, invisible to the relay.
-5. The Target allowlists every forwarding request against its own published services and reports refusals.
-6. WebSocket compression stays disabled for tunnel records; the relay copies ciphertext only and its counters are ciphertext-based.
-
-See [architecture and protocol](docs/architecture.md) for the full lifecycle and the [security model](docs/security.md) for the trust model, credentials, and vulnerability reporting.
+See the [security model](docs/security.md) for credentials and vulnerability reporting.
 
 ## Public documentation
 
 | Document | Purpose |
 | --- | --- |
-| [Architecture and protocol](docs/architecture.md) | Topology, token groups, catalog protocol, handshake, records, reconnection, trust boundary. |
-| [Security model](docs/security.md) | The v2 trust model (trusting the relay operator), credentials, allowlist, metadata, operations. |
-| [Caddy deployment](docs/deployment-caddy.md) | Production WSS routing, loopback listeners, HTTPS management, systemd, firewall, health checks. |
-| [Testing and release checks](docs/testing.md) | Go, race, frontend, cross-platform, real sockets, recovery, protocol, manual acceptance. |
-| [User guide](docs/user-guide.md) | Illustrated guide in 12 languages: roles, five-minute deploy, console, recipes, troubleshooting. |
-| [Upgrade guide](docs/upgrade-guide.md) | Clean break from v1 (≤v0.3.1) to v2, rollback, and acceptance. |
-| [v0.4.0 release notes](docs/release-v0.4.0.md) | v2 clean break, required role upgrades, verification scope. |
-| [v2 acceptance checklist](docs/v2-acceptance.zh-CN.md) | Item-by-item acceptance record for this architecture version. |
-| [Configuration and Caddy examples](examples/) | Verified minimal starting points for Relay, Target, Edge, and Caddy. |
-| [Tahoe-style WebUI guide](docs/macos-tahoe-webui-style-guide.zh-CN.md) | Reusable system fonts, semantic tokens, light/dark materials, responsive rules. |
-
-## The v2 architecture
-
-- **Token groups**: the relay manages many tokens; each is strictly 1 Target instance + N Edges, fully isolated across tokens.
-- **Service catalog**: the Target maintains multiple `ip:port` entries locally and publishes them live; Edges map with suggested ports and optional LAN visibility.
-- **Operable observability**: the relay console aggregates per-token presence and ciphertext traffic, supports disabling a token (disconnects the group) and kicking single connections.
-- **Login-free client consoles**: Target/Edge pages accept loopback only, verify origin and local host, and use a per-boot CSRF token.
-- **Clean break**: v1 punch configurations fail fast with migration guidance instead of silent conversion.
+| [v0.4.0 release notes](docs/release-v0.4.0.md) | Breaking change, required role upgrades, verification |
+| [User guide](docs/user-guide.md) | 12 languages: five-minute deploy, console, recipes, troubleshooting |
+| [Upgrade guide](docs/upgrade-guide.md) | Clean break from ≤v0.3.1, rollback, acceptance |
+| [Architecture and protocol](docs/architecture.md) | Topology, catalog, handshake, records, reconnection |
+| [Security model](docs/security.md) | Trust boundary, credentials, allowlist, reporting |
+| [Caddy deployment](docs/deployment-caddy.md) | Production WSS, loopback, systemd, health checks |
+| [Testing and release checks](docs/testing.md) | Go / race / frontend / real sockets |
+| [v2 acceptance checklist](docs/v2-acceptance.zh-CN.md) | Item-by-item acceptance record |
+| [Examples](examples/) | Minimal Relay / Target / Edge / Caddy files |
 
 ## Verification
 
@@ -259,16 +384,13 @@ See [architecture and protocol](docs/architecture.md) for the full lifecycle and
 go test -count=1 ./...
 go test -race -count=1 ./...
 go vet ./...
-cd frontend
-npm test
-npm run check
-npm run build
+cd frontend && npm test && npm run check && npm run build
 ```
 
-Integration tests start a real HTTP/WebSocket relay, target-side TCP test services, and multiple clients, covering concurrent multi-edge traffic, catalog publish/withdraw sync, duplicate-Target rejection, allowlist refusal, token disable/re-enable, kick self-healing, cross-token isolation, Target restart recovery, occupied mapping-port recovery, bounded shutdown, and ciphertext tampering rejection.
+Integration tests cover concurrent multi-edge traffic, catalog publish/withdraw, duplicate-Target rejection, allowlist enforcement, token disable/kick recovery, cross-token isolation, Target restart, occupied mapping-port recovery, bounded shutdown, and ciphertext tampering rejection.
 
 ## Name and license
 
-**MoleX** combines the tunnel-digging mole with an **X** for **transfer, cross, exchange** — forwarding TCP services you own through an encrypted rendezvous path.
+**MoleX** joins the tunnel-digging mole with an **X** for transfer, cross, and exchange: forward TCP services you own through an encrypted rendezvous.
 
-Source code and in-repo documentation are under the [MIT license](LICENSE). MIT allows use, modification, distribution, and commercial reuse with the license and disclaimer retained; the software license does not automatically grant rights to the project name, logo, or trademarks.
+Source and in-repo docs are under the [MIT license](LICENSE). The license covers the code; it does not grant the project name, logo, or trademarks.
