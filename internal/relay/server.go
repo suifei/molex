@@ -101,26 +101,7 @@ func New(options Options) *Server {
 // Groups whose token was disabled or removed are disconnected immediately.
 func (s *Server) UpdateTokens(credentials []Credential) {
 	s.tokens.replace(credentials)
-	active := s.tokens.activeIDs()
-	for _, tokenID := range s.groups.tokenIDs() {
-		if active[tokenID] {
-			continue
-		}
-		members := s.groups.members(tokenID)
-		for _, member := range members {
-			member.armClose(CloseTokenDisabled, "token disabled by relay administrator")
-		}
-		for _, member := range members {
-			member.closeWith(CloseTokenDisabled, "token disabled by relay administrator")
-		}
-		if len(members) > 0 {
-			telemetry.Emit(s.options.Reporter, telemetry.Event{
-				Type:    "relay_token_revoked",
-				Level:   "warning",
-				Message: fmt.Sprintf("Token %s was disabled or removed; %d connected client(s) were disconnected", tokenID, len(members)),
-			})
-		}
-	}
+	s.dropInactiveGroups()
 }
 
 // DisconnectPeer closes one connected participant by its peer id.
@@ -183,7 +164,7 @@ func (s *Server) Run(ctx context.Context) error {
 		Listen:  listener.Addr().String(),
 	})
 
-	go s.sweepExpiredLegacy(ctx)
+	go s.sweepExpiredTokens(ctx)
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -243,7 +224,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if status != 0 {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="relay"`)
 		if status == http.StatusForbidden {
-			http.Error(w, "token disabled", status)
+			reason := "token disabled"
+			if token.lifetimeExpired(time.Now()) {
+				reason = "token expired"
+			}
+			http.Error(w, reason, status)
 		} else {
 			http.Error(w, "unauthorized", status)
 		}
@@ -371,7 +356,10 @@ func (s *Server) authorize(header string) (tokenState, int) {
 		return tokenState{}, http.StatusUnauthorized
 	}
 	if state.disabled {
-		return tokenState{}, http.StatusForbidden
+		return state, http.StatusForbidden
+	}
+	if state.lifetimeExpired(s.tokens.now()) {
+		return state, http.StatusForbidden
 	}
 	return state, 0
 }
@@ -461,9 +449,9 @@ func (s *Server) flushPeerMetadata(p *participant, tokenValue string) {
 	})
 }
 
-// sweepExpiredLegacy drops participants whose rotated-out token value fell
-// past its grace window.
-func (s *Server) sweepExpiredLegacy(ctx context.Context) {
+// sweepExpiredTokens drops participants whose rotated-out token value fell
+// past its grace window, or whose token lifetime has ended.
+func (s *Server) sweepExpiredTokens(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -472,7 +460,43 @@ func (s *Server) sweepExpiredLegacy(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.dropExpiredLegacy()
+			s.dropInactiveGroups()
 		}
+	}
+}
+
+const tokenExpiredReason = "token expired; ask the relay administrator to extend its lifetime or issue a new token"
+
+func (s *Server) dropInactiveGroups() {
+	expired := s.tokens.expiredIDs()
+	active := s.tokens.activeIDs()
+	for _, tokenID := range s.groups.tokenIDs() {
+		if active[tokenID] {
+			continue
+		}
+		reason := "token disabled by relay administrator"
+		if expired[tokenID] {
+			reason = tokenExpiredReason
+		}
+		members := s.groups.members(tokenID)
+		for _, member := range members {
+			member.armClose(CloseTokenDisabled, reason)
+		}
+		for _, member := range members {
+			member.closeWith(CloseTokenDisabled, reason)
+		}
+		if len(members) == 0 {
+			continue
+		}
+		message := fmt.Sprintf("Token %s was disabled or removed; %d connected client(s) were disconnected", tokenID, len(members))
+		if expired[tokenID] {
+			message = fmt.Sprintf("Token %s expired; %d connected client(s) were disconnected", tokenID, len(members))
+		}
+		telemetry.Emit(s.options.Reporter, telemetry.Event{
+			Type:    "relay_token_revoked",
+			Level:   "warning",
+			Message: message,
+		})
 	}
 }
 

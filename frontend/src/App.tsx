@@ -48,7 +48,9 @@ import type {
   ServiceEntry,
   SessionState,
   TokenEntry,
+  TokenLifetime,
 } from "./types";
+import { TOKEN_LIFETIMES } from "./types";
 
 type Theme = "dark" | "light";
 export type ThemePreference = Theme | "system";
@@ -660,6 +662,7 @@ function TokensManager({ locale, status, onError }: { locale: Locale; status: Ru
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [copiedID, setCopiedID] = useState("");
   const [graceDays, setGraceDays] = useState(3);
+  const [lifetime, setLifetime] = useState<TokenLifetime>("never");
 
   useEffect(() => {
     let mounted = true;
@@ -690,7 +693,7 @@ function TokensManager({ locale, status, onError }: { locale: Locale; status: Ru
   const create = async () => {
     setCreating(true);
     try {
-      const entry = await api.createToken(note.trim());
+      const entry = await api.createToken(note.trim(), lifetime);
       setTokens((current) => [...(current ?? []), entry]);
       setRevealed((current) => ({ ...current, [entry.id]: true }));
       setNote("");
@@ -705,6 +708,19 @@ function TokensManager({ locale, status, onError }: { locale: Locale; status: Ru
     setPendingID(token.id);
     try {
       const updated = await api.updateToken(token.id, { disabled: !token.disabled });
+      setTokens((current) => (current ?? []).map((entry) => (entry.id === token.id ? updated : entry)));
+    } catch (error) {
+      onError(messageFrom(error));
+    } finally {
+      setPendingID("");
+    }
+  };
+
+  const updateLifetime = async (token: TokenEntry, next: string) => {
+    if (next === "current" || !TOKEN_LIFETIMES.includes(next as TokenLifetime)) return;
+    setPendingID(token.id);
+    try {
+      const updated = await api.updateToken(token.id, { lifetime: next });
       setTokens((current) => (current ?? []).map((entry) => (entry.id === token.id ? updated : entry)));
     } catch (error) {
       onError(messageFrom(error));
@@ -755,6 +771,18 @@ function TokensManager({ locale, status, onError }: { locale: Locale; status: Ru
           <span className="field-label">{text.accessTokens}</span>
           <p>{text.accessTokensDescription}</p>
         </div>
+        <label className="token-grace">
+          <span>{text.graceDays}</span>
+          <select
+            value={graceDays}
+            onChange={(event) => setGraceDays(Number(event.target.value))}
+            aria-label={text.graceDays}
+          >
+            {[1, 3, 7, 14, 30].map((days) => (
+              <option key={days} value={days}>{days}</option>
+            ))}
+          </select>
+        </label>
       </div>
       <div className="token-create">
         <input
@@ -764,21 +792,18 @@ function TokensManager({ locale, status, onError }: { locale: Locale; status: Ru
           aria-label={text.tokenNotePlaceholder}
           spellCheck={false}
         />
+        <label className="token-lifetime">
+          <span>{text.tokenLifetime}</span>
+          <select value={lifetime} onChange={(event) => setLifetime(event.target.value as TokenLifetime)} aria-label={text.tokenLifetime}>
+            {TOKEN_LIFETIMES.map((value) => (
+              <option key={value} value={value}>{tokenLifetimeLabel(text, value)}</option>
+            ))}
+          </select>
+        </label>
         <button type="button" className="button secondary-button compact-command" onClick={() => void create()} disabled={creating}>
           {creating ? <CircleNotch size={17} className="spin" /> : <Plus size={17} />}
           {text.createToken}
         </button>
-        <label className="token-grace">
-          <span>{text.graceDays}</span>
-          <input
-            type="number"
-            min={1}
-            max={30}
-            value={graceDays}
-            onChange={(event) => setGraceDays(Math.min(30, Math.max(1, Number(event.target.value) || 3)))}
-            aria-label={text.graceDays}
-          />
-        </label>
       </div>
 
       {tokens === null ? (
@@ -801,6 +826,8 @@ function TokensManager({ locale, status, onError }: { locale: Locale; status: Ru
                   <div className="token-chips">
                     {token.disabled ? (
                       <span className="token-chip chip-disabled">{text.tokenDisabledTag}</span>
+                    ) : tokenIsExpired(token) ? (
+                      <span className="token-chip chip-disabled">{text.tokenExpiredTag}</span>
                     ) : (
                       <>
                         <span className={`token-chip ${group?.targetOnline ? "chip-online" : "chip-offline"}`}>
@@ -823,10 +850,30 @@ function TokensManager({ locale, status, onError }: { locale: Locale; status: Ru
                   </button>
                 </div>
                 <div className="token-row-actions">
-                  {token.createdAt && <span className="token-created">{text.createdAt} {formatTime(token.createdAt, locale)}</span>}
-                  {token.previousExpiresAt && (
-                    <span className="token-created">{text.tokenGraceUntil} {formatTime(token.previousExpiresAt, locale)}</span>
-                  )}
+                  <div className="token-row-meta">
+                    {token.createdAt && <span className="token-created">{text.createdAt} {formatTime(token.createdAt, locale)}</span>}
+                    <span className="token-created">
+                      {token.expiresAt
+                        ? `${tokenIsExpired(token) ? text.tokenExpiredTag : text.tokenExpiresAt} ${formatDateTime(token.expiresAt, locale)}`
+                        : text.tokenNeverExpires}
+                    </span>
+                    {token.previousExpiresAt && (
+                      <span className="token-created">{text.tokenGraceUntil} {formatDateTime(token.previousExpiresAt, locale)}</span>
+                    )}
+                  </div>
+                  <label className="token-lifetime">
+                    <select
+                      value={token.expiresAt ? "current" : "never"}
+                      onChange={(event) => void updateLifetime(token, event.target.value)}
+                      disabled={pending}
+                      aria-label={text.changeTokenLifetime}
+                    >
+                      {token.expiresAt && <option value="current">{formatDateTime(token.expiresAt, locale)}</option>}
+                      {TOKEN_LIFETIMES.map((value) => (
+                        <option key={value} value={value}>{tokenLifetimeLabel(text, value)}</option>
+                      ))}
+                    </select>
+                  </label>
                   <button type="button" className="button secondary-button compact-command" onClick={() => void rotate(token)} disabled={pending || token.disabled}>
                     {pending ? <CircleNotch size={16} className="spin" /> : <ArrowClockwise size={16} />}
                     {text.rotateToken}
@@ -1932,6 +1979,22 @@ function messageFrom(error: unknown): string {
   return String(error);
 }
 
+function tokenLifetimeLabel(text: (typeof copy)[Locale], lifetime: TokenLifetime): string {
+  const labels: Record<TokenLifetime, string> = {
+    never: text.tokenLifetimeNever,
+    "1d": text.tokenLifetime1d,
+    "7d": text.tokenLifetime7d,
+    "30d": text.tokenLifetime30d,
+    "90d": text.tokenLifetime90d,
+    "365d": text.tokenLifetime365d,
+  };
+  return labels[lifetime];
+}
+
+function tokenIsExpired(token: TokenEntry): boolean {
+  return Boolean(token.expiresAt && Date.parse(token.expiresAt) <= Date.now());
+}
+
 function formatTime(value: string, locale: Locale): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "--:--:--";
@@ -1939,6 +2002,19 @@ function formatTime(value: string, locale: Locale): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function formatDateTime(value: string, locale: Locale): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--";
+  return new Intl.DateTimeFormat(locale === "zh-CN" ? "zh-CN" : "en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
     hour12: false,
   }).format(date);
 }

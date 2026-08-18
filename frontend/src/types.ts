@@ -4,12 +4,16 @@ export type RuntimeState = "idle" | "starting" | "connecting" | "running" | "sto
 export type PeerStatus = "waiting" | "paired";
 export type MappingState = "listening" | "waiting" | "error";
 
+export const TOKEN_LIFETIMES = ["never", "1d", "7d", "30d", "90d", "365d"] as const;
+export type TokenLifetime = (typeof TOKEN_LIFETIMES)[number];
+
 export interface TokenEntry {
   id: string;
   token: string;
   note?: string;
   disabled?: boolean;
   createdAt?: string;
+  expiresAt?: string;
   previousToken?: string;
   previousExpiresAt?: string;
 }

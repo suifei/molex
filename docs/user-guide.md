@@ -20,7 +20,7 @@ Highlights:
 - One Target or Edge process can join several tokens. Services can be limited to selected groups.
 - The Target catalog syncs live. Edges open a mapping listener only when the route is ready and the service is published.
 - Payload protection is X25519 + HKDF-SHA256 + AES-256-GCM inside TLS 1.3. The PSK is derived from the token.
-- Relay console: password login, token create / rotate / disable / delete, audit log, live peers.
+- Relay console: password login, token create / lifetime / rotate / disable / delete, audit log, live peers.
 - Target and Edge consoles: login-free, loopback-only, same-origin and CSRF protected.
 - Clients retry with capped jittered backoff from about 1 s to 15 s.
 
@@ -215,14 +215,14 @@ Only the Relay console asks for a password. First run creates it. Language and t
 
 ![Relay dashboard](images/user-guide/relay-dashboard-en.png)
 
-- Create, reveal/copy, disable, delete, and **rotate** tokens. Rotation keeps the previous value valid for 1–30 days (default 3).
+- Create, reveal/copy, disable, delete, and **rotate** tokens. Choose a lifetime when creating (1 / 7 / 30 / 90 days, 1 year, or never) and change it later on the same row. Rotation keeps the previous value valid for 1–30 days (default 3).
 - Administrative actions are written to a JSONL audit file beside the configuration (token ids only).
 - “Listen address” is the data plane, not the Web console.
 - Connected clients show name, role, token id, platform, uptime, and ciphertext RX/TX. The “N services / N mappings” label refreshes when the catalog or mappings change.
 
 ![Relay connected-client details](images/user-guide/relay-connected-clients-en.png)
 
-Disconnect kicks one client; it reconnects with backoff unless the token is disabled.
+Disconnect kicks one client; it reconnects with backoff unless the token is disabled or expired.
 
 ### 5.3 Target
 
@@ -321,14 +321,14 @@ Command-line tokens can appear in shell history. Prefer a protected config file.
 - Backoff: about 1 s → 15 s, ±20% jitter, reset after 30 s healthy.
 - Broken routes close existing TCP streams; applications must retry.
 - At most 256 concurrent streams per Edge process / Target session.
-- Duplicate Target: rejected with a clear close reason. Token disable/delete disconnects the group. Rotation keeps the old value during the grace window.
+- Duplicate Target: rejected with a clear close reason. Token disable/delete/expiry disconnects the group. Rotation keeps the old value during the grace window.
 
 ## 10. Troubleshooting
 
 | Result | Action |
 | --- | --- |
 | HTTP `401` | Copy the current token from the Relay console. After rotation, migrate before the grace window ends. |
-| HTTP `403` | The token is disabled. Ask the Relay operator to enable it or issue a new one. |
+| HTTP `403` | The token is disabled or expired. Ask the Relay operator to enable it, extend its lifetime, or issue a new one. |
 | HTTP `404` | URL must end with `/ws/session`; Caddy must forward that path. |
 | HTTP `502`/`503`/`504` | Start Relay; check Caddy upstream `127.0.0.1:8080`. |
 | Duplicate Target | Stop the other Target or use a different token. |

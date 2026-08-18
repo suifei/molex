@@ -125,6 +125,46 @@ func TestRelayTokenCRUDPersistsAndReturnsFullValues(t *testing.T) {
 	response.Body.Close()
 }
 
+func TestRelayTokenLifetimeCreateUpdateAndClear(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "molex.json")
+	server := newRelayTestServerAt(t, configPath)
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := newTestClient(t)
+	csrf := login(t, client, httpServer.URL)
+
+	response := doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/tokens", httpServer.URL, csrf, tokenCreateRequest{Note: "lab", Lifetime: "30d"})
+	assertStatus(t, response, http.StatusCreated)
+	var created config.TokenEntry
+	decodeResponse(t, response, &created)
+	if created.ExpiresAt.IsZero() || created.ExpiresAt.Before(time.Now().Add(20*24*time.Hour)) {
+		t.Fatalf("created expiry = %s, want about 30 days", created.ExpiresAt)
+	}
+
+	lifetime := "never"
+	response = doAuthorizedRequest(t, client, http.MethodPut, httpServer.URL+"/api/tokens/"+created.ID, httpServer.URL, csrf, tokenUpdateRequest{Lifetime: &lifetime})
+	assertStatus(t, response, http.StatusOK)
+	var cleared config.TokenEntry
+	decodeResponse(t, response, &cleared)
+	if !cleared.ExpiresAt.IsZero() {
+		t.Fatalf("cleared expiry = %s, want unlimited", cleared.ExpiresAt)
+	}
+
+	lifetime = "7d"
+	response = doAuthorizedRequest(t, client, http.MethodPut, httpServer.URL+"/api/tokens/"+created.ID, httpServer.URL, csrf, tokenUpdateRequest{Lifetime: &lifetime})
+	assertStatus(t, response, http.StatusOK)
+	var week config.TokenEntry
+	decodeResponse(t, response, &week)
+	if week.ExpiresAt.IsZero() || week.ExpiresAt.Before(time.Now().Add(5*24*time.Hour)) {
+		t.Fatalf("updated expiry = %s, want about 7 days", week.ExpiresAt)
+	}
+
+	response = doAuthorizedRequest(t, client, http.MethodPost, httpServer.URL+"/api/tokens", httpServer.URL, csrf, tokenCreateRequest{Lifetime: "2h"})
+	assertStatus(t, response, http.StatusBadRequest)
+	response.Body.Close()
+}
+
 func TestRelayTokenRotateKeepsPreviousValueThroughGrace(t *testing.T) {
 	directory := t.TempDir()
 	configPath := filepath.Join(directory, "molex.json")

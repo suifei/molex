@@ -46,12 +46,14 @@ type bootstrapRequest struct {
 }
 
 type tokenCreateRequest struct {
-	Note string `json:"note"`
+	Note     string `json:"note"`
+	Lifetime string `json:"lifetime"`
 }
 
 type tokenUpdateRequest struct {
 	Note     *string `json:"note"`
 	Disabled *bool   `json:"disabled"`
+	Lifetime *string `json:"lifetime"`
 }
 
 type tokenRotateRequest struct {
@@ -483,11 +485,17 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		expiresAt, err := config.ParseLifetime(input.Lifetime, time.Now().UTC())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		entry := config.TokenEntry{
 			ID:        id,
 			Token:     value,
 			Note:      strings.TrimSpace(input.Note),
 			CreatedAt: time.Now().UTC(),
+			ExpiresAt: expiresAt,
 		}
 
 		s.actionMu.Lock()
@@ -508,10 +516,14 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.manager.UpdateTokens(cfg.Tokens)
+		message := fmt.Sprintf("Token %s was created", entry.ID)
+		if !entry.ExpiresAt.IsZero() {
+			message = fmt.Sprintf("Token %s was created; it expires at %s", entry.ID, entry.ExpiresAt.Format(time.RFC3339))
+		}
 		s.manager.RecordAudit(telemetry.Event{
 			Type:    "token_created",
 			Level:   "info",
-			Message: fmt.Sprintf("Token %s was created", entry.ID),
+			Message: message,
 		})
 		writeJSON(w, http.StatusCreated, entry)
 	default:
@@ -563,6 +575,14 @@ func (s *Server) handleTokenItem(w http.ResponseWriter, r *http.Request) {
 		if input.Disabled != nil {
 			cfg.Tokens[index].Disabled = *input.Disabled
 		}
+		if input.Lifetime != nil {
+			expiresAt, err := config.ParseLifetime(*input.Lifetime, time.Now().UTC())
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			cfg.Tokens[index].ExpiresAt = expiresAt
+		}
 		if err := cfg.Validate(); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -581,6 +601,17 @@ func (s *Server) handleTokenItem(w http.ResponseWriter, r *http.Request) {
 				Type:    action,
 				Level:   "warning",
 				Message: fmt.Sprintf("Token %s was %s", id, strings.TrimPrefix(action, "token_")),
+			})
+		}
+		if input.Lifetime != nil {
+			message := fmt.Sprintf("Token %s lifetime is now unlimited", id)
+			if !cfg.Tokens[index].ExpiresAt.IsZero() {
+				message = fmt.Sprintf("Token %s lifetime now expires at %s", id, cfg.Tokens[index].ExpiresAt.Format(time.RFC3339))
+			}
+			s.manager.RecordAudit(telemetry.Event{
+				Type:    "token_lifetime_updated",
+				Level:   "warning",
+				Message: message,
 			})
 		}
 		writeJSON(w, http.StatusOK, cfg.Tokens[index])

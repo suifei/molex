@@ -398,6 +398,25 @@ func TestValidateRelayRotationFields(t *testing.T) {
 	}
 }
 
+func TestParseLifetimePresets(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	never, err := ParseLifetime(LifetimeNever, now)
+	if err != nil || !never.IsZero() {
+		t.Fatalf("never = %v %v", never, err)
+	}
+	empty, err := ParseLifetime("", now)
+	if err != nil || !empty.IsZero() {
+		t.Fatalf("empty = %v %v", empty, err)
+	}
+	month, err := ParseLifetime(Lifetime30Days, now)
+	if err != nil || !month.Equal(now.Add(30*24*time.Hour)) {
+		t.Fatalf("30d = %v %v", month, err)
+	}
+	if _, err := ParseLifetime("2h", now); err == nil || !strings.Contains(err.Error(), "lifetime must be one of") {
+		t.Fatalf("unknown lifetime accepted: %v", err)
+	}
+}
+
 func TestGroupTokensFallsBackToSingleToken(t *testing.T) {
 	single := Config{Mode: ModeEdge, Token: "mx2_single-token-0123456789"}
 	groups := single.GroupTokens()

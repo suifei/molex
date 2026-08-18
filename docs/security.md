@@ -53,7 +53,8 @@ A token is one line of trust: it admits clients to the Relay, groups them (one T
 
 - The Relay stores token values in its configuration file and shows them, masked by default, to the authenticated operator so they can be distributed to Target and Edge machines.
 - Caddy can read the bearer token in the upgrade request on the loopback hop; it runs on the same trusted host as the Relay.
-- Disabling or deleting a token immediately disconnects the whole group and blocks reconnection with an actionable error.
+- A token may carry an optional `expiresAt`. The console presets are 1 / 7 / 30 / 90 days, 1 year, or never (the default). Changing the lifetime on an existing token recomputes expiry from now; clearing it makes the token unlimited again.
+- Disabling, deleting, or letting a token expire immediately disconnects the whole group and blocks reconnection with an actionable error.
 - Rotating a token issues a new value and keeps the previous one valid for a configured grace window (1–30 days, 3 by default) so Edges and the Target can migrate without downtime. After expiry the old value is rejected and remaining legacy sessions are disconnected.
 - Create, rotate, disable, enable, and delete actions are appended to a JSONL audit file beside the configuration. The log records the action and token id, never the token value.
 - Token values must never appear in logs, telemetry events, or client-side status output.

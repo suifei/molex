@@ -78,7 +78,7 @@ PSK   = HKDF-SHA256(token, "molex/v2/e2e-psk")
 route = HMAC-SHA256(PSK, "molex/rendezvous/v1" || "molex/v2")
 ```
 
-The relay authenticates the bearer token (SHA-256 lookup, disabled tokens refused with HTTP 403), pre-computes the expected route for that token, and rejects any hello whose route does not match — a session cannot smuggle itself into another token's group.
+The relay authenticates the bearer token (SHA-256 lookup; disabled or expired tokens refused with HTTP 403), pre-computes the expected route for that token, and rejects any hello whose route does not match — a session cannot smuggle itself into another token's group.
 
 One live Target process is admitted per token. That process opens an adaptive pool of outbound sessions: one hot-standby slot plus one paired slot per Edge, up to 65,535. Arriving Edges wait in a FIFO queue and each is paired with the oldest free Target session slot. Each pair gets its own hello, ephemeral keys, encrypted records, and yamux session, so streams and keys never mix between Edges. A second Target process on the same token is rejected with an actionable close reason; unmatched Target slots remain as long-lived hot standby for the next Edge.
 

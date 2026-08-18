@@ -55,7 +55,7 @@ v1 与 v2 不能混跑。hello、凭据和目录协议都不同。按 Token 组�
 
 ## 已在 v2 上的后续操作
 
-Token 轮换（`POST /api/tokens/:id/rotate` 或 Relay 控制台的「轮换」）会让旧值在 1–30 天内继续有效（默认 3 天）。请在到期前更新所有 Target 和 Edge。审计只记录 token id。
+Token 轮换（`POST /api/tokens/:id/rotate` 或 Relay 控制台的「轮换」）会让旧值在 1–30 天内继续有效（默认 3 天）。请在到期前更新所有 Target 和 Edge。新建 Token 也可设置自身有效期（`never` / `1d` / `7d` / `30d` / `90d` / `365d`），之后用 `PUT /api/tokens/:id` 改期。审计只记录 token id。
 
 单个 Target 或 Edge 进程可通过 `tokens[]` 加入多组。用 `services[].groups` 限制服务可见性。加入多组时，Edge 映射必须带 `group`。
 

@@ -31,6 +31,13 @@ const (
 	MaxServices    = 256
 	MaxMappings    = 256
 	MaxTokens      = 256
+
+	LifetimeNever  = "never"
+	Lifetime1Day   = "1d"
+	Lifetime7Days  = "7d"
+	Lifetime30Days = "30d"
+	Lifetime90Days = "90d"
+	Lifetime1Year  = "365d"
 )
 
 // Config keeps one small top-level surface for all three v2 roles. Every
@@ -60,8 +67,34 @@ type TokenEntry struct {
 	Note              string    `json:"note,omitempty"`
 	Disabled          bool      `json:"disabled,omitempty"`
 	CreatedAt         time.Time `json:"createdAt,omitempty"`
+	ExpiresAt         time.Time `json:"expiresAt,omitempty"`
 	PreviousToken     string    `json:"previousToken,omitempty"`
 	PreviousExpiresAt time.Time `json:"previousExpiresAt,omitempty"`
+}
+
+// TokenLifetimes are the console presets for a token's own validity
+// window. Empty or "never" means the token does not expire.
+var TokenLifetimes = []string{LifetimeNever, Lifetime1Day, Lifetime7Days, Lifetime30Days, Lifetime90Days, Lifetime1Year}
+
+// ParseLifetime turns a console preset into an absolute expiry. Zero time
+// means unlimited. The clock is injected so API tests can pin "now".
+func ParseLifetime(lifetime string, now time.Time) (time.Time, error) {
+	switch strings.TrimSpace(lifetime) {
+	case "", LifetimeNever:
+		return time.Time{}, nil
+	case Lifetime1Day:
+		return now.Add(24 * time.Hour), nil
+	case Lifetime7Days:
+		return now.Add(7 * 24 * time.Hour), nil
+	case Lifetime30Days:
+		return now.Add(30 * 24 * time.Hour), nil
+	case Lifetime90Days:
+		return now.Add(90 * 24 * time.Hour), nil
+	case Lifetime1Year:
+		return now.Add(365 * 24 * time.Hour), nil
+	default:
+		return time.Time{}, fmt.Errorf("lifetime must be one of: %s", strings.Join(TokenLifetimes, ", "))
+	}
 }
 
 // ServiceEntry is one forwardable backend address published by a target.

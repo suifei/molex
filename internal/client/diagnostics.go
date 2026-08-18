@@ -51,7 +51,7 @@ func permanentRejection(err error) string {
 		case 401:
 			return "The relay rejected this token (HTTP 401). Copy a valid token from the relay console and paste the exact value here."
 		case 403:
-			return "The relay reports this token is disabled (HTTP 403). Ask the relay administrator to enable the token or issue a new one."
+			return "The relay reports this token is disabled or expired (HTTP 403). Ask the relay administrator to enable it, extend its lifetime, or issue a new one."
 		}
 	}
 	var closeErr *websocket.CloseError
@@ -60,6 +60,9 @@ func permanentRejection(err error) string {
 		case relay.CloseDuplicateTarget:
 			return "Another Target is already connected with this token. Each token accepts exactly one Target; stop the other Target or use a different token."
 		case relay.CloseTokenDisabled:
+			if strings.Contains(strings.ToLower(closeErr.Text), "expired") {
+				return "This token has expired. Ask the relay administrator to extend its lifetime or issue a new token before reconnecting."
+			}
 			return "The relay administrator disabled this token. Ask for a new or re-enabled token before reconnecting."
 		case relay.CloseKicked:
 			return "The relay administrator disconnected this client. It reconnects automatically; contact the administrator if access stays blocked."

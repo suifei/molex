@@ -20,7 +20,7 @@ Relay 按 Token 准入、分组并复制不透明密文。发行版 Relay 永不
 - 一台 Target 或 Edge 可用单个进程加入多组 Token；服务可按组限制可见性。
 - 目录实时同步。映射监听只在路由就绪且服务仍发布时开放。
 - 载荷保护为 TLS 1.3 内的 X25519 + HKDF-SHA256 + AES-256-GCM。PSK 由 Token 派生。
-- Relay 控制台：密码登录、Token 创建/轮换/停用/删除、审计落盘、在线客户端。
+- Relay 控制台：密码登录、Token 创建/有效期/轮换/停用/删除、审计落盘、在线客户端。
 - Target / Edge 控制台：免登录、仅回环、同源与 CSRF 防护。
 - 客户端重试：约 1 秒到 15 秒上限，带抖动。
 
@@ -215,14 +215,14 @@ ssh -N -L 9090:127.0.0.1:9090 user@molex-host
 
 ![Relay 中文控制台](images/user-guide/relay-dashboard-zh-CN.png)
 
-- 可创建、显示/复制、停用、删除和**轮换** Token。轮换后旧值在 1–30 天内并行有效（默认 3 天）。
+- 可创建、显示/复制、停用、删除和**轮换** Token。创建时可选择有效期（1 / 7 / 30 / 90 天、1 年或无限），之后可在同一行改期。轮换后旧值在 1–30 天内并行有效（默认 3 天）。
 - 管理操作写入配置旁的 JSONL 审计文件（只记 token id）。
 - 「监听地址」是数据面，不是 Web 控制台。
 - 已连接客户端显示名称、角色、token id、平台、在线时长和密文 RX/TX。「N services / N mappings」会随目录或映射变更刷新。
 
 ![Relay 已连接客户端详情](images/user-guide/relay-connected-clients-zh-CN.png)
 
-「断开」会踢掉单个客户端；除非 Token 已停用，否则它会按退避重连。
+「断开」会踢掉单个客户端；除非 Token 已停用或过期，否则它会按退避重连。
 
 ### 5.3 Target
 
@@ -321,14 +321,14 @@ molex version
 - 退避约 1 秒 → 15 秒，±20% 抖动，健康 30 秒后重置。
 - 路由中断会关闭已有 TCP；应用必须重试。
 - 每个 Edge 进程 / Target 会话最多 256 条并发流。
-- 重复 Target 会被拒绝。停用/删除 Token 会断开整组。轮换宽限期内旧值仍可用。
+- 重复 Target 会被拒绝。停用/删除/过期 Token 会断开整组。轮换宽限期内旧值仍可用。
 
 ## 10. 故障排查
 
 | 结果 | 操作 |
 | --- | --- |
 | HTTP `401` | 从 Relay 控制台复制当前 Token。轮换后请在宽限期结束前完成迁移。 |
-| HTTP `403` | Token 已停用。请管理员启用或签发新 Token。 |
+| HTTP `403` | Token 已停用或过期。请管理员启用、延长有效期或签发新 Token。 |
 | HTTP `404` | URL 必须以 `/ws/session` 结尾，且 Caddy 转发该路径。 |
 | HTTP `502`/`503`/`504` | 启动 Relay，检查 Caddy 上游 `127.0.0.1:8080`。 |
 | 重复 Target | 停止另一个 Target，或改用其他 Token。 |

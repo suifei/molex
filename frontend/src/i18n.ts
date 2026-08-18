@@ -69,6 +69,17 @@ export const copy = {
     accessTokens: "Access tokens",
     accessTokensDescription: "Each token admits exactly one target and any number of edges. Values stay visible to the relay operator.",
     createToken: "Create token",
+    tokenLifetime: "Lifetime",
+    tokenLifetimeNever: "Never expires",
+    tokenLifetime1d: "1 day",
+    tokenLifetime7d: "7 days",
+    tokenLifetime30d: "30 days",
+    tokenLifetime90d: "90 days",
+    tokenLifetime365d: "1 year",
+    tokenExpiredTag: "Expired",
+    tokenExpiresAt: "Expires",
+    tokenNeverExpires: "Never expires",
+    changeTokenLifetime: "Change token lifetime",
     tokenNotePlaceholder: "Note, e.g. office-nas",
     noTokensYet: "No tokens yet. Create one and paste it into the target and edge consoles.",
     tokenTargetOnline: "Target online",
@@ -261,6 +272,17 @@ export const copy = {
     accessTokens: "接入 Token",
     accessTokensDescription: "每个 Token 只允许一个 Target 接入，Edge 数量不限。Token 值对 Relay 管理员保持可见。",
     createToken: "创建 Token",
+    tokenLifetime: "有效期",
+    tokenLifetimeNever: "无限时长",
+    tokenLifetime1d: "1 天",
+    tokenLifetime7d: "7 天",
+    tokenLifetime30d: "30 天",
+    tokenLifetime90d: "90 天",
+    tokenLifetime365d: "1 年",
+    tokenExpiredTag: "已过期",
+    tokenExpiresAt: "到期",
+    tokenNeverExpires: "无限时长",
+    changeTokenLifetime: "修改 Token 有效期",
     tokenNotePlaceholder: "备注，例如 office-nas",
     noTokensYet: "还没有 Token。创建一个并粘贴到 Target 和 Edge 控制台。",
     tokenTargetOnline: "Target 在线",
@@ -403,6 +425,7 @@ const zhValidationErrors: Record<string, string> = {
   "token must contain at least 16 characters": "Token 至少需要 16 个字符",
   "use either the single token field or the tokens group list, not both": "请只使用单个 token 字段或多组 tokens 列表，不要同时填写",
   "graceDays must be between 1 and 30": "宽限天数必须在 1 到 30 之间",
+  "lifetime must be one of: never, 1d, 7d, 30d, 90d, 365d": "有效期必须是：无限、1 天、7 天、30 天、90 天或 1 年",
   "name: must be at most 64 bytes": "节点名称最多允许 64 字节",
   "name: must not contain control characters": "节点名称不能包含控制字符",
   "name: must be valid UTF-8": "节点名称必须是有效文本",
@@ -480,9 +503,10 @@ const zhRuntimeMessages: Record<string, string> = {
   "Waiting for the target service catalog": "等待 Target 服务目录",
   "The target does not publish this service; it stays inactive until published again": "Target 未发布此服务；重新发布后映射自动恢复",
   "The relay rejected this token (HTTP 401). Copy a valid token from the relay console and paste the exact value here.": "Relay 拒绝了此 Token（HTTP 401）。请从 Relay 控制台复制有效 Token 并原样粘贴。",
-  "The relay reports this token is disabled (HTTP 403). Ask the relay administrator to enable the token or issue a new one.": "Relay 提示此 Token 已停用（HTTP 403）。请联系 Relay 管理员启用该 Token 或签发新 Token。",
+  "The relay reports this token is disabled or expired (HTTP 403). Ask the relay administrator to enable it, extend its lifetime, or issue a new one.": "Relay 提示此 Token 已停用或过期（HTTP 403）。请联系 Relay 管理员启用、延长有效期或签发新 Token。",
   "Another Target is already connected with this token. Each token accepts exactly one Target; stop the other Target or use a different token.": "此 Token 已有另一个 Target 在线。每个 Token 只允许一个 Target；请停止另一个 Target 或改用其他 Token。",
   "The relay administrator disabled this token. Ask for a new or re-enabled token before reconnecting.": "Relay 管理员停用了此 Token。请获取新 Token 或等待重新启用后再连接。",
+  "This token has expired. Ask the relay administrator to extend its lifetime or issue a new token before reconnecting.": "此 Token 已过期。请联系 Relay 管理员延长有效期或签发新 Token 后再连接。",
   "The relay administrator disconnected this client. It reconnects automatically; contact the administrator if access stays blocked.": "Relay 管理员断开了此客户端。它会自动重连；若持续无法接入请联系管理员。",
 };
 
@@ -612,6 +636,18 @@ export function localizeRuntimeMessage(message: string, locale: Locale): string 
 
   const tokenRevoked = message.match(/^Token (.+) was disabled or removed; (\d+) connected client\(s\) were disconnected$/);
   if (tokenRevoked) return `Token ${tokenRevoked[1]} 已停用或删除；${tokenRevoked[2]} 个已连接客户端被断开`;
+
+  const tokenExpiredSweep = message.match(/^Token (.+) expired; (\d+) connected client\(s\) were disconnected$/);
+  if (tokenExpiredSweep) return `Token ${tokenExpiredSweep[1]} 已过期；${tokenExpiredSweep[2]} 个已连接客户端被断开`;
+
+  const tokenCreatedExpiry = message.match(/^Token (.+) was created; it expires at (.+)$/);
+  if (tokenCreatedExpiry) return `已创建 Token ${tokenCreatedExpiry[1]}；有效期至 ${tokenCreatedExpiry[2]}`;
+
+  const tokenLifetimeCleared = message.match(/^Token (.+) lifetime is now unlimited$/);
+  if (tokenLifetimeCleared) return `Token ${tokenLifetimeCleared[1]} 有效期已改为无限时长`;
+
+  const tokenLifetimeSet = message.match(/^Token (.+) lifetime now expires at (.+)$/);
+  if (tokenLifetimeSet) return `Token ${tokenLifetimeSet[1]} 有效期现为 ${tokenLifetimeSet[2]}`;
 
   const tokenCreated = message.match(/^Token (.+) was created$/);
   if (tokenCreated) return `已创建 Token ${tokenCreated[1]}`;

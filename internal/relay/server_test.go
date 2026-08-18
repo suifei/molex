@@ -388,6 +388,60 @@ func TestUpdateTokensDisconnectsDisabledGroups(t *testing.T) {
 	}
 }
 
+func TestExpiredTokenLifetimeRefusesAdmissionAndDropsSessions(t *testing.T) {
+	events := make(chan telemetry.Event, 32)
+	server := New(Options{
+		PairTimeout: 5 * time.Second,
+		Tokens: []Credential{{
+			ID:        "tok-test",
+			Token:     testTokenValue,
+			ExpiresAt: time.Now().Add(time.Hour),
+		}},
+		Reporter: telemetry.ReporterFunc(func(event telemetry.Event) { events <- event }),
+	})
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	url := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/session"
+
+	edgeConn, _ := dialParticipant(t, url, testTokenValue, protocol.RoleEdge, "", "")
+	defer edgeConn.Close()
+	targetConn, _ := dialParticipant(t, url, testTokenValue, protocol.RoleTarget, "", "instance-a")
+	defer targetConn.Close()
+	if _, _, err := edgeConn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := targetConn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+
+	server.UpdateTokens([]Credential{{
+		ID:        "tok-test",
+		Token:     testTokenValue,
+		ExpiresAt: time.Now().Add(-time.Second),
+	}})
+
+	for _, conn := range []*websocket.Conn{edgeConn, targetConn} {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _, err := conn.ReadMessage()
+		var closeErr *websocket.CloseError
+		if !errors.As(err, &closeErr) || closeErr.Code != CloseTokenDisabled {
+			t.Fatalf("expired token close = %v, want code %d", err, CloseTokenDisabled)
+		}
+		if !strings.Contains(closeErr.Text, "expired") {
+			t.Fatalf("expired close reason = %q", closeErr.Text)
+		}
+	}
+	waitForRelayEvent(t, events, "relay_token_revoked")
+
+	header := make(http.Header)
+	header.Set("Authorization", "Bearer "+testTokenValue)
+	if _, response, err := websocket.DefaultDialer.Dial(url, header); err == nil {
+		t.Fatal("expired token reconnected")
+	} else if response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expired reconnect response = %#v", response)
+	}
+}
+
 func TestDisconnectPeerClosesOneConnection(t *testing.T) {
 	events := make(chan telemetry.Event, 32)
 	server := New(Options{

@@ -52,6 +52,7 @@ func newServeCommand() *cobra.Command {
 					ID:              token.ID,
 					Token:           token.Token,
 					Disabled:        token.Disabled,
+					ExpiresAt:       token.ExpiresAt,
 					Previous:        token.PreviousToken,
 					PreviousExpires: token.PreviousExpiresAt,
 				})

@@ -85,7 +85,8 @@ func TestClientErrorGuidance(t *testing.T) {
 		want string
 	}{
 		{"unknown token", &relayHTTPError{statusCode: 401, status: "401 Unauthorized", err: errors.New("bad handshake")}, "Copy a valid token"},
-		{"disabled token", &relayHTTPError{statusCode: 403, status: "403 Forbidden", err: errors.New("bad handshake")}, "token is disabled"},
+		{"disabled token", &relayHTTPError{statusCode: 403, status: "403 Forbidden", err: errors.New("bad handshake")}, "disabled or expired"},
+		{"token expired close", &websocket.CloseError{Code: relay.CloseTokenDisabled, Text: "token expired; ask the relay administrator to extend its lifetime or issue a new token"}, "has expired"},
 		{"route", &relayHTTPError{statusCode: 404, status: "404 Not Found", err: errors.New("bad handshake")}, "/ws/session"},
 		{"gateway", &relayHTTPError{statusCode: 502, status: "502 Bad Gateway", err: errors.New("bad handshake")}, "Caddy's upstream"},
 		{"dns", &net.DNSError{Name: "relay.invalid", Err: "no such host"}, "DNS settings"},

@@ -35,6 +35,13 @@ let mockTokens: TokenEntry[] = [];
 const mockListeners = new Set<(event: RuntimeEvent) => void>();
 let startTimer: number | undefined;
 
+function lifetimeExpiresAt(lifetime: string): string | undefined {
+  const days: Record<string, number> = { "1d": 1, "7d": 7, "30d": 30, "90d": 90, "365d": 365 };
+  const count = days[lifetime];
+  if (!count) return undefined;
+  return new Date(Date.now() + count * 24 * 60 * 60 * 1000).toISOString();
+}
+
 function emitMock(event: Omit<RuntimeEvent, "time">) {
   const complete = { ...event, time: new Date().toISOString() } as RuntimeEvent;
   if (!complete.transient) mockEvents = [...mockEvents.slice(-99), complete];
@@ -263,7 +270,7 @@ export const api = {
     return request<TokenEntry[]>("/api/tokens");
   },
 
-  async createToken(note: string): Promise<TokenEntry> {
+  async createToken(note: string, lifetime = "never"): Promise<TokenEntry> {
     if (previewMode) {
       const bytes = crypto.getRandomValues(new Uint8Array(32));
       const encoded = btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
@@ -272,16 +279,24 @@ export const api = {
         token: `mx2_${encoded}`,
         note,
         createdAt: new Date().toISOString(),
+        expiresAt: lifetimeExpiresAt(lifetime),
       };
       mockTokens = [...mockTokens, entry];
       return entry;
     }
-    return request<TokenEntry>("/api/tokens", { method: "POST", body: JSON.stringify({ note }) });
+    return request<TokenEntry>("/api/tokens", { method: "POST", body: JSON.stringify({ note, lifetime }) });
   },
 
-  async updateToken(id: string, changes: { note?: string; disabled?: boolean }): Promise<TokenEntry> {
+  async updateToken(id: string, changes: { note?: string; disabled?: boolean; lifetime?: string }): Promise<TokenEntry> {
     if (previewMode) {
-      mockTokens = mockTokens.map((token) => (token.id === id ? { ...token, ...changes } : token));
+      mockTokens = mockTokens.map((token) => {
+        if (token.id !== id) return token;
+        const next: TokenEntry = { ...token };
+        if (changes.note !== undefined) next.note = changes.note;
+        if (changes.disabled !== undefined) next.disabled = changes.disabled;
+        if (changes.lifetime !== undefined) next.expiresAt = lifetimeExpiresAt(changes.lifetime);
+        return next;
+      });
       const updated = mockTokens.find((token) => token.id === id);
       if (!updated) throw new Error("token not found");
       return updated;

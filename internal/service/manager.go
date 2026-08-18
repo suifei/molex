@@ -171,6 +171,7 @@ func relayCredentials(tokens []config.TokenEntry) []relay.Credential {
 			ID:              token.ID,
 			Token:           token.Token,
 			Disabled:        token.Disabled,
+			ExpiresAt:       token.ExpiresAt,
 			Previous:        token.PreviousToken,
 			PreviousExpires: token.PreviousExpiresAt,
 		})

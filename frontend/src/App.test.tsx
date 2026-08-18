@@ -100,12 +100,15 @@ describe("relay console", () => {
       note: "lab",
       createdAt: "2026-08-11T05:00:00Z",
     });
-    const updateToken = vi.spyOn(api, "updateToken").mockResolvedValue({
-      id: "tok-1",
-      token: "mx2_existing-token-value-0123456789",
-      note: "office",
-      disabled: true,
-    });
+    const updateToken = vi.spyOn(api, "updateToken").mockImplementation(async (id, changes) => ({
+      id,
+      token: id === "tok-1" ? "mx2_existing-token-value-0123456789" : "mx2_created-token-value-0123456789",
+      note: id === "tok-1" ? "office" : "lab",
+      disabled: changes.disabled,
+      expiresAt: changes.lifetime && changes.lifetime !== "never"
+        ? "2026-08-25T05:00:00Z"
+        : undefined,
+    }));
 
     render(<App />);
     await screen.findByRole("heading", { name: "Sign in to MoleX" });
@@ -122,9 +125,13 @@ describe("relay console", () => {
     expect(screen.getByText("mx2_existing-token-value-0123456789")).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText("Note, e.g. office-nas"), { target: { value: "lab" } });
+    fireEvent.change(screen.getByLabelText("Lifetime"), { target: { value: "30d" } });
     fireEvent.click(screen.getByRole("button", { name: "Create token" }));
-    await waitFor(() => expect(createToken).toHaveBeenCalledWith("lab"));
+    await waitFor(() => expect(createToken).toHaveBeenCalledWith("lab", "30d"));
     expect(await screen.findByText("mx2_created-token-value-0123456789")).toBeInTheDocument();
+
+    fireEvent.change(screen.getAllByLabelText("Change token lifetime")[0], { target: { value: "7d" } });
+    await waitFor(() => expect(updateToken).toHaveBeenCalledWith("tok-1", { lifetime: "7d" }));
 
     fireEvent.click(screen.getAllByRole("button", { name: "Disable" })[0]);
     await waitFor(() => expect(updateToken).toHaveBeenCalledWith("tok-1", { disabled: true }));

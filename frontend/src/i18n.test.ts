@@ -28,6 +28,17 @@ describe("runtime message localization", () => {
       "Token tok-alpha was rotated; the previous value stays valid until 2026-08-20T00:00:00Z",
       "zh-CN",
     )).toBe("Token tok-alpha 已轮换；旧值有效至 2026-08-20T00:00:00Z");
+    expect(localizeRuntimeMessage(
+      "Token tok-alpha was created; it expires at 2026-09-17T00:00:00Z",
+      "zh-CN",
+    )).toBe("已创建 Token tok-alpha；有效期至 2026-09-17T00:00:00Z");
+    expect(localizeRuntimeMessage("Token tok-alpha lifetime is now unlimited", "zh-CN")).toBe(
+      "Token tok-alpha 有效期已改为无限时长",
+    );
+    expect(localizeRuntimeMessage(
+      "Token tok-alpha expired; 2 connected client(s) were disconnected",
+      "zh-CN",
+    )).toBe("Token tok-alpha 已过期；2 个已连接客户端被断开");
   });
 
   it("localizes catalog and mapping lifecycle messages", () => {

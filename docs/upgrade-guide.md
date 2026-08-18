@@ -55,7 +55,7 @@ Rolling a mixed v1/v2 fleet does not work. The hello, credentials, and catalog p
 
 ## Staying on v2
 
-Token rotation (`POST /api/tokens/:id/rotate` or the Relay console **Rotate** button) keeps the previous value valid for 1–30 days (default 3). Update every Target and Edge before expiry. Audit records store token ids only.
+Token rotation (`POST /api/tokens/:id/rotate` or the Relay console **Rotate** button) keeps the previous value valid for 1–30 days (default 3). Update every Target and Edge before expiry. New tokens can also be given their own lifetime (`never`, `1d`, `7d`, `30d`, `90d`, `365d`); edit it later with `PUT /api/tokens/:id`. Audit records store token ids only.
 
 A single Target or Edge process may join several tokens via `tokens[]`. Restrict Target services with `services[].groups`. Edge mappings need `group` when more than one group is joined.
 

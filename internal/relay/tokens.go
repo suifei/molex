@@ -17,6 +17,7 @@ type Credential struct {
 	ID              string
 	Token           string
 	Disabled        bool
+	ExpiresAt       time.Time
 	Previous        string
 	PreviousExpires time.Time
 }
@@ -57,6 +58,7 @@ func (s *tokenStore) replace(credentials []Credential) {
 			id:       credential.ID,
 			token:    value,
 			disabled: credential.Disabled,
+			expires:  credential.ExpiresAt,
 			route:    protocol.RouteForToken(value),
 		}
 		// The rotated-out value keeps working on its own route until the
@@ -91,7 +93,7 @@ func (s *tokenStore) lookup(value string) (tokenState, bool) {
 	if !ok {
 		return tokenState{}, false
 	}
-	if state.legacy && !now().Before(state.expires) {
+	if state.expired(now()) && state.legacy {
 		return tokenState{}, false
 	}
 	return state, true
@@ -103,11 +105,19 @@ func (s *tokenStore) activeIDs() map[string]bool {
 	defer s.mu.RUnlock()
 	ids := make(map[string]bool, len(s.byHash))
 	for _, state := range s.byHash {
-		if !state.disabled && !state.legacy {
+		if !state.disabled && !state.legacy && !state.expired(s.now()) {
 			ids[state.id] = true
 		}
 	}
 	return ids
+}
+
+func (st tokenState) expired(now time.Time) bool {
+	return !st.expires.IsZero() && !now.Before(st.expires)
+}
+
+func (st tokenState) lifetimeExpired(now time.Time) bool {
+	return !st.legacy && st.expired(now)
 }
 
 // legacyExpired reports whether a token's grace window has closed (or was
@@ -117,8 +127,22 @@ func (s *tokenStore) legacyExpired(tokenID string) bool {
 	defer s.mu.RUnlock()
 	for _, state := range s.byHash {
 		if state.id == tokenID && state.legacy {
-			return !s.now().Before(state.expires)
+			return state.expired(s.now())
 		}
 	}
 	return true
+}
+
+// expiredIDs returns token ids whose current value has passed ExpiresAt.
+func (s *tokenStore) expiredIDs() map[string]bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := make(map[string]bool)
+	now := s.now()
+	for _, state := range s.byHash {
+		if state.lifetimeExpired(now) {
+			ids[state.id] = true
+		}
+	}
+	return ids
 }
